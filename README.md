@@ -14,6 +14,24 @@ platform's shared code. The sections below list every one of those dependencies.
 The platform's database tables for the Quran were **not** dropped. They are still in the platform's database
 (see [Tables it owns](#tables-it-owns)).
 
+### What the platform did after the copy
+
+The platform then removed the Quran completely (branch `feature/remove-quran`, cut from `84aca260`). On that branch:
+
+- The module, its panel plugins, console page, seeders, font, routes, abilities (`quran.*`), `Feature::Quran`,
+  `NavGroup::Quran`, the `recitation_check` AI helper and every Quran screen in the portal and the app are gone.
+- The contracts the Quran used to bind and their do-nothing defaults are **deleted from the platform**, not kept:
+  `Learning\Contracts\{LearningQuran,NoLearningQuran,JourneyQuran,NoJourneyQuran}`,
+  `SharedKernel\Quran\{LessonQuran,NoLessonQuran}`, `SharedKernel\Text\{QuranSource,NoQuranSource,QuranFetchFailed,WordAlignment}`
+  and `SharedKernel\Ai\{RecitationEngine,SpeechRecitation,RecitationResult,ExpectedText}` (with `WordAlignmentTest`).
+  Their last versions are in this repo's main tree at their platform paths. `ArabicText` stays in the platform.
+- `CatalogApi::subjectKind`/`subjectsOfKind`, `SaveSubject`'s kind and track, the class page's side panel hook and
+  Learning's Quran branches (report form, homework `expected`, submission checks, journey `hifz`) are removed.
+- The six Quran migrations moved, unchanged, to `apps/api/database/migrations/legacy/` in the platform, which still
+  loads them: a new platform database gets the same, empty tables. Nothing drops or alters them.
+- A stored `quran` (a plan's features, an academy's `features_on/off` or modules) or `recitation_check` (an AI
+  setting) is ignored. The `add_quran_to_plans` data migration still runs in the platform.
+
 ---
 
 ## Layout
@@ -24,6 +42,7 @@ Paths mirror the platform repository, so a file can go back to exactly where it 
 |---|---|
 | `apps/api/modules/Quran/` | The whole Laravel module: `src/` (Actions, Domain, Queries, Filament screens, HTTP controllers and presenters, jobs, listeners, live signals, models, bridges to Learning and Classroom, privacy, setup step, text), `database/migrations`, `database/seeders`, `routes/api.php`, `routes/web.php`, `lang/ar`, `lang/en`, `config/quran.php`, `resources/views`, `resources/quran` (fallback text folder) |
 | `apps/api/modules/Platform/…` | Quran code that lived in the Platform module's folder: the console's Quran page (`QuranConsole` and its view), the data migration that gives every plan the `quran` feature, `DemoQuranAreaSeeder` |
+| `apps/api/modules/{Learning,SharedKernel}/…` | The contracts and recitation engine only the Quran used, which the platform deleted afterwards: `LearningQuran`, `JourneyQuran` and their defaults; `LessonQuran`, `NoLessonQuran`; `QuranSource`, `NoQuranSource`, `QuranFetchFailed`, `WordAlignment`; `RecitationEngine`, `SpeechRecitation`, `RecitationResult`, `ExpectedText` (and `tests/Unit/SharedKernel/WordAlignmentTest.php`) |
 | `apps/api/public/fonts/quran/` | Amiri Quran font (OFL) for the panels |
 | `apps/api/tests/` | Tests whose subject is the Quran: `Feature/Quran/*`, `Unit/Quran/*`, `Feature/Demo/DemoQuranTest.php`, `Feature/Platform/SpeechRecitationTest.php`, `Support/QuranLessons.php`, `Support/QuranProgram.php`, `Fixtures/quran/*` (Tanzil sample files) |
 | `apps/web/` | The portal's Quran routes (`/family/quran`, `/family/hifz`, `/teach/lessons/{id}/quran`, `/teach/students/{enrollment}/quran`, `/teach/exams`, the public `/{locale}/certificates/{code}`), components (`quran/`, `mushaf/`, `hifz/`, `recited-words.tsx`, `teach/hifz-forms.tsx`, `teach/recitation-*.tsx`, `site/certificate.*`), libs (`lib/quran`, `lib/mushaf`, `lib/hifz`, `lib/teach/recitation*`), the Amiri Quran font, `e2e/quran.spec.ts` |
@@ -43,7 +62,7 @@ Paths mirror the platform repository, so a file can go back to exactly where it 
 The module "sits on top": nothing in the platform depends on it, and it reaches the platform only through these.
 Copies of every file named here are under `integration-points/`.
 
-### Contracts the platform defines and the Quran binds (do-nothing defaults stay in the platform)
+### Contracts the Quran binds (in the platform at `84aca260`; removed from it since, now in this repo's main tree)
 
 | Contract | Default in the platform | Quran's binding | What it carries |
 |---|---|---|---|
@@ -94,8 +113,9 @@ Bindings: `LearningServiceProvider` (`bindIf` for the two Learning contracts), `
 
 ## Tables it owns
 
-They are created by the migrations in `apps/api/modules/Quran/database/migrations/` and **still exist in the
-platform's database** with their data. Nothing was dropped.
+They are created by the migrations in `apps/api/modules/Quran/database/migrations/` (in the platform these now sit,
+unchanged, in `apps/api/database/migrations/legacy/`) and **still exist in the platform's database** with their data.
+Nothing was dropped.
 
 | Table | Migration |
 |---|---|
@@ -122,11 +142,13 @@ The Quran's text itself is not in the database: it is Tanzil's files in the serv
 2. Restore the wiring listed above from `integration-points/` (compare each file with the platform's current one;
    `integration-points/INDEX.md` gives the Quran lines): `bootstrap/providers.php`, `composer.json` autoload, the
    three panel providers, `ConsolePlugin`, the seeder calls, the ability matrix, the arch tests.
-3. Make sure the contracts and their defaults still exist in the platform (`LearningQuran`, `JourneyQuran`,
-   `LessonQuran`, `QuranSource`, `RecitationEngine`, `Feature::Quran`, the `quran.*` abilities, `subjects.kind`).
-   If the platform removed them, copy them back from `integration-points/`.
-4. `composer dump-autoload`, then `php artisan migrate`. The tables already exist, so the migrations are already
-   recorded and nothing is re-created.
+3. Put the contracts and their defaults back (the platform removed them): copy `LearningQuran`, `JourneyQuran`,
+   `LessonQuran`, `QuranSource`, `RecitationEngine` and the rest from this repo's main tree, and restore
+   `Feature::Quran`, the `quran.*` abilities, `NavGroup::Quran`, `AiFeature::RecitationCheck`, Catalog's subject
+   kind and the Learning and Classroom hooks from `integration-points/`.
+4. Delete the platform's `apps/api/database/migrations/legacy/` (the same six migrations, which the module brings
+   back) and its loading line in `AppServiceProvider`, then `composer dump-autoload` and `php artisan migrate`. The
+   tables already exist, so the migrations are already recorded and nothing is re-created.
 5. `php artisan quran:text --fetch` if the server has no copy of the text.
 6. Portal: copy `apps/web/` files back, merge `messages/{en,ar}.quran.json` into `messages/{en,ar}.json`, restore the
    `quran` area in `lib/modules.ts` and the nav entries, then regenerate the API types (`npm run api:types`).
@@ -163,9 +185,9 @@ The Quran's text itself is not in the database: it is Tanzil's files in the serv
   platform tables with `DB::table` (`users`, `enrollments`, `sessions`, `session_participants`, `group_members`,
   `lesson_groups`, `subjects`, `homework`, `homework_submissions`, `curriculum_nodes`). The four demo seeders also call
   Scheduling's and Catalog's actions and models.
-- **Recitation check engine.** `SpeechRecitation`, `RecitationEngine`, `ExpectedText`, `WordAlignment` and
-  `ArabicText` live in SharedKernel and are shared with other features; they are copied under `integration-points/`,
-  not moved.
+- **Recitation check engine.** `SpeechRecitation`, `RecitationEngine`, `RecitationResult`, `ExpectedText` and
+  `WordAlignment` lived in the platform's SharedKernel; only the Quran used them, so the platform deleted them and
+  they are in this repo's main tree. `ArabicText` stays shared in the platform (copied under `integration-points/`).
 - **Columns in platform tables** (`homework.expected`, `subjects.kind`/`quran_track`) and the `"quran"` plan feature in `saas_plans.features` belong to their
   modules' migrations; the platform's Learning migration `drop_hifz_daily_pages` is Quran history.
 - **Mixed tests.** About 115 platform tests (Billing, Scheduling, Learning, Demo, Privacy, Security…) set up a Quran
@@ -192,6 +214,9 @@ The Quran's text itself is not in the database: it is Tanzil's files in the serv
   الموديول، والقوائم، والـ seeders، والاختبارات المختلطة)، وملف `INDEX.md` يحدد أسطر القرآن في كل ملف.
 - جداول القرآن (`hifz_*` و`lesson_mushaf` و`recitation_mistakes` و`submission_checks` و`quran_*`) **ما زالت في قاعدة
   بيانات المنصة ببياناتها**، ولم يُحذف منها شيء.
+- حذفت المنصة بعد ذلك القرآن كله (الفرع `feature/remove-quran`)، ومعه العقود التي كان يربطها وبدائلها الفارغة،
+  وهي الآن في الشجرة الرئيسية لهذا المستودع. ونُقلت migrations جداوله كما هي إلى `apps/api/database/migrations/legacy/`
+  في المنصة، فلا يُحذف جدول ولا يُعدَّل.
 - المستودع لا يعمل وحده بعد؛ فهو يعتمد على عقود المنصة (المستأجر، والصلاحيات، والباقة `Feature::Quran`، والحصص،
   وغرفة الحصة، وواجبات التسميع، والإشعارات وغيرها). القسم الإنجليزي أعلاه يذكرها كلها، ويشرح خطوة بخطوة كيف يُعاد
   ربطه بالمنصة، أو كيف يُبنى منه تطبيق مستقل.
