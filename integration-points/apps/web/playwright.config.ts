@@ -1,0 +1,70 @@
+import { defineConfig, devices } from '@playwright/test';
+
+/**
+ * The portal against a running API with the demo data (`php artisan
+ * migrate --database=pgsql_owner` and `php artisan db:seed`, then `php
+ * artisan serve`), as a teacher or a family would use it. The tests change
+ * that data (a report sent, homework marked and handed in, a chest opened, a
+ * receipt approved), so they run one at a time, and the global setup puts
+ * back what they use up first (the API's E2eResetSeeder, through artisan in
+ * E2E_API_DIR with this process's environment: run the tests with the
+ * API's DB_DATABASE and the rest). Every test fails, never skips, when the
+ * state it needs is missing.
+ *
+ * The phone projects (a Pixel 7) take every flow; `desktop` takes each
+ * look's pages again at 1366px, where the side menu replaces the tab bar.
+ */
+const base = process.env.WEB_URL ?? 'http://127.0.0.1:3000';
+const desktop = { ...devices['Desktop Chrome'], viewport: { width: 1366, height: 768 } };
+
+export default defineConfig({
+  testDir: './e2e',
+  globalSetup: './e2e/global-setup.ts',
+  fullyParallel: false,
+  workers: 1,
+  retries: 0,
+  reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
+  timeout: 45_000,
+  use: {
+    baseURL: base,
+    locale: 'ar-EG',
+    timezoneId: 'Africa/Cairo',
+    trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
+  },
+  projects: [
+    { name: 'setup', testMatch: /auth\.setup\.ts/ },
+    { name: 'sign-in', testMatch: /sign-in\.spec\.ts/, use: desktop },
+    {
+      name: 'teacher',
+      testMatch: /teacher\.spec\.ts/,
+      dependencies: ['setup'],
+      use: { ...devices['Pixel 7'], storageState: 'e2e/.auth/teacher.json' },
+    },
+    // Each family spec picks its account (test.use storageState).
+    { name: 'family', testMatch: /family-.*\.spec\.ts/, dependencies: ['setup'], use: { ...devices['Pixel 7'] } },
+    { name: 'desktop', testMatch: /desktop\.spec\.ts/, dependencies: ['setup'], use: desktop },
+    // Group lessons (the demo group): its family and student signed in apart, the teacher as above.
+    { name: 'groups-setup', testMatch: /groups\.setup\.ts/ },
+    { name: 'groups', testMatch: /groups\.spec\.ts/, dependencies: ['setup', 'groups-setup'], use: { ...devices['Pixel 7'] } },
+    // The Quran program (the demo's Quran course): its teacher, family and the public certificate check, each signed in apart.
+    { name: 'quran', testMatch: /quran\.spec\.ts/, dependencies: ['setup'], use: { ...devices['Pixel 7'] } },
+    // Academy modules: the owner hides the games and the messages; their entries leave both portals, a direct visit is calm, then they come back.
+    { name: 'modules', testMatch: /modules\.spec\.ts/, dependencies: ['setup'], use: { ...devices['Pixel 7'] } },
+    // The pages before signing in (the academy's, the platform's), on a phone.
+    { name: 'site', testMatch: /site\.spec\.ts/, dependencies: ['setup'], use: { ...devices['Pixel 7'] } },
+    // A family asks for and books its own free trial on the academy's page, and uses the trial's own links (no sign-in).
+    { name: 'trial', testMatch: /trial-booking\.spec\.ts/, use: { ...devices['Pixel 7'] } },
+    // After the free trial: the report and its offer from the family's link and in their account, the second trial, booking again (no setup: its own families).
+    { name: 'trial-report', testMatch: /trial-report\.spec\.ts/, use: { ...devices['Pixel 7'] } },
+    // The family starts a course and pays on its own (J3): from the report to a paid course, refusals on the way, coupons, calling it off (its own families).
+    { name: 'start', testMatch: /start-course\.spec\.ts/, use: { ...devices['Pixel 7'] } },
+    // A clear balance on each course and adding a child (J5a): the demo's Hala with an invoice due tomorrow, students in their looks, a new guardian adding a child (its own families).
+    { name: 'balance', testMatch: /balance\.spec\.ts/, use: { ...devices['Pixel 7'] } },
+    // The saved card and automatic renewal (J5b): a new family pays with "save my card", the renewal charged to it, renewal off and on, the card removed (its own family).
+    { name: 'auto-renew', testMatch: /auto-renew\.spec\.ts/, use: { ...devices['Pixel 7'] } },
+  ],
+  webServer: process.env.E2E_SERVE
+    ? { command: 'npm run start', url: `${base}/ar/sign-in`, reuseExistingServer: true, timeout: 120_000 }
+    : undefined,
+});

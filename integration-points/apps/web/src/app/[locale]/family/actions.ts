@@ -1,0 +1,262 @@
+'use server';
+
+import { refresh } from 'next/cache';
+import { cookies, headers } from 'next/headers';
+import { call, send, type Outcome } from '@/lib/api/server';
+import { LEARNER_COOKIE } from '@/lib/family/context';
+import type { ChildBody } from '@/lib/family/add-child';
+import { checkoutBody, type Cards } from '@/lib/family/cards';
+import type { AddedChild, CancelPreview, Rating } from '@/lib/family/types';
+import type { OpenedChest } from '@/lib/journey/types';
+
+/**
+ * The family's writes, through the same endpoints (and so the same Actions)
+ * as the app and the /my panel. The API checks each one again: whose lesson
+ * or homework it is, the policy, that a kid neither cancels nor rates, and
+ * that only the student opens their week's chest.
+ */
+export type Result = { ok: boolean; message?: string; errors?: Record<string, string[]> };
+
+function result(outcome: Outcome<unknown>): Result {
+  if (outcome.ok) {
+    refresh();
+    return { ok: true };
+  }
+  const first = Object.values(outcome.problem.errors)[0]?.[0];
+  return { ok: false, message: first ?? (outcome.problem.title || undefined), errors: outcome.problem.errors };
+}
+
+/** Whose pages a guardian sees; kept for this browser. */
+export async function chooseLearner(id: string): Promise<void> {
+  const secure = ((await headers()).get('x-forwarded-proto') ?? 'http') === 'https';
+  (await cookies()).set(LEARNER_COOKIE, id, { httpOnly: true, secure, sameSite: 'lax', path: '/', maxAge: 60 * 60 * 24 * 365 });
+  refresh();
+}
+
+/**
+ * What cancelling would do by the academy's policy, and the reasons to pick
+ * from. A group lesson answers excuse_only: the learner's own seat is excused
+ * ("I won't attend"), named by learner_id when a guardian follows several in it.
+ */
+export async function cancellationOf(id: string, learnerId?: string): Promise<{ ok: true; preview: CancelPreview } | { ok: false; message?: string }> {
+  return read<CancelPreview>('/v1/lessons/{session}/cancellation', id, learnerId ? { learner_id: learnerId } : undefined);
+}
+
+/** This person's rating of a lesson, and the tags to offer. */
+export async function ratingOf(id: string): Promise<{ ok: true; preview: Rating } | { ok: false; message?: string }> {
+  const got = await read<{ data: Rating } | Rating>('/v1/lessons/{session}/rating', id);
+  if (!got.ok) return got;
+  const body = got.preview as { data?: Rating };
+  return { ok: true, preview: body.data ?? (got.preview as Rating) };
+}
+
+/** A read a dialog asks for while it opens (the page itself is already there). */
+async function read<T>(
+  path: '/v1/lessons/{session}/cancellation' | '/v1/lessons/{session}/rating',
+  id: string,
+  query?: Record<string, string>,
+): Promise<{ ok: true; preview: T } | { ok: false; message?: string }> {
+  const response = await call('get', path, { params: { session: id }, query });
+  const body = (await response.json().catch(() => ({}))) as T & { title?: string; detail?: string };
+  if (!response.ok) return { ok: false, message: body.detail ?? body.title };
+  return { ok: true, preview: body };
+}
+
+/**
+ * Cancels a lesson, or on a group lesson excuses the learner's own seat (the
+ * same endpoint: the lesson goes on for the others); a retry of the same
+ * confirmation sends the same key and does it once.
+ */
+export async function cancelLesson(id: string, reason: string, note: string, key: string, learnerId?: string): Promise<Result> {
+  return result(
+    await send('post', '/v1/lessons/{session}/cancel', {
+      params: { session: id },
+      body: { reason, note: note.trim() || null, ...(learnerId ? { learner_id: learnerId } : {}) },
+      idempotencyKey: key,
+    }),
+  );
+}
+
+/** Turns down the substitute: the lesson is cancelled on the academy's account, for a makeup. */
+export async function refuseSubstitute(id: string): Promise<Result & { makeupDays?: number }> {
+  const done = await send<{ makeup_days?: number }>('post', '/v1/lessons/{session}/refuse-substitute', { params: { session: id } });
+  return done.ok ? { ...result(done), makeupDays: done.data.makeup_days } : result(done);
+}
+
+export async function rateLesson(id: string, stars: number, tags: string[], comment: string): Promise<Result> {
+  return result(
+    await send('put', '/v1/lessons/{session}/rating', {
+      params: { session: id },
+      body: { stars, tags, comment: comment.trim() || null },
+    }),
+  );
+}
+
+/** Hands homework in: words, a recording made in the browser, or a file (the API checks the kind and size). */
+export async function handIn(id: string, form: FormData): Promise<Result> {
+  const sent = new FormData();
+  const body = String(form.get('body') ?? '').trim();
+  if (body) sent.set('body', body);
+  const file = form.get('file');
+  if (file instanceof File && file.size > 0) sent.set('file', file, file.name || 'recording.webm');
+  return result(await send('post', '/v1/learning/homework/{homework}/submissions', { params: { homework: id }, form: sent }));
+}
+
+/**
+ * Opens the week's chest on the journey once every lesson of the week was
+ * attended and every homework due in it handed in (the student only; the API
+ * checks it again). One key per press, so a retry opens it once.
+ */
+export async function openChest(period: string, key: string): Promise<Result & { opened?: OpenedChest }> {
+  const done = await send<{ data: OpenedChest }>('post', '/v1/learning/journey/chest', { body: { period }, idempotencyKey: key });
+  return done.ok ? { ...result(done), opened: done.data.data } : result(done);
+}
+
+/** A guardian cheers their child on (a few a day). */
+export async function cheer(learnerId: string, kind: string): Promise<Result> {
+  return result(await send('post', '/v1/learning/cheers', { body: { learner_id: learnerId, kind } }));
+}
+
+export async function cheersSeen(): Promise<void> {
+  await send('post', '/v1/learning/cheers/seen');
+}
+
+/**
+ * Opens a checkout at the academy's gateway; the page then goes there. With
+ * `back: 'portal'` the gateway brings the payer back to the portal's
+ * /{locale}/pay/return (the invoice and the payment as they stand), else to
+ * the academy's pay page as before.
+ */
+export async function payInvoice(id: string, accountId: string | null, key: string, back?: 'portal', save?: { version: string } | null): Promise<{ ok: true; url: string } | { ok: false; message?: string }> {
+  const opened = await send<{ url: string }>('post', '/v1/family/invoices/{invoice}/checkout', {
+    params: { invoice: id },
+    body: checkoutBody(accountId, back, save ?? null),
+    idempotencyKey: key,
+  });
+  if (!opened.ok) return { ok: false, message: Object.values(opened.problem.errors)[0]?.[0] ?? (opened.problem.title || undefined) };
+  return { ok: true, url: opened.data.url };
+}
+
+/**
+ * The payer turns automatic renewal on or off (J5b; every account of theirs,
+ * or one), one key per press; the answer is the cards and renewal as they
+ * now stand, and the API's sentence to show.
+ */
+export async function setAutoRenew(on: boolean, accountId: string | null, key: string): Promise<{ ok: true; cards: Cards; message: string } | { ok: false; message?: string }> {
+  const done = await send<{ data: Cards; message: string }>('put', '/v1/family/cards/auto-renew', {
+    body: { on, ...(accountId ? { billing_account_id: accountId } : {}) },
+    idempotencyKey: key,
+  });
+  if (!done.ok) return { ok: false, message: Object.values(done.problem.errors)[0]?.[0] ?? (done.problem.title || undefined) };
+  refresh();
+  return { ok: true, cards: done.data.data, message: done.data.message };
+}
+
+/** The payer removes a saved card (renewal goes off with the last one); one key per press. */
+export async function removeCard(card: string, key: string): Promise<{ ok: true; cards: Cards; message: string } | { ok: false; message?: string }> {
+  const done = await send<{ data: Cards; message: string }>('delete', '/v1/family/cards/{card}', { params: { card }, idempotencyKey: key });
+  if (!done.ok) return { ok: false, message: Object.values(done.problem.errors)[0]?.[0] ?? (done.problem.title || undefined) };
+  refresh();
+  return { ok: true, cards: done.data.data, message: done.data.message };
+}
+
+/**
+ * The payer puts a coupon on an invoice before paying, or takes one off: the
+ * invoice is issued again, so the answer names the new one (the page goes to
+ * it). One key per press. Refusals come back in the payer's words.
+ */
+export async function couponOnInvoice(id: string, code: string | null, key: string): Promise<{ ok: true; invoice: string; message: string } | { ok: false; message?: string }> {
+  const done = code === null
+    ? await send<{ data: { id: string }; message: string }>('delete', '/v1/family/invoices/{invoice}/coupon', { params: { invoice: id }, idempotencyKey: key })
+    : await send<{ data: { id: string }; message: string }>('post', '/v1/family/invoices/{invoice}/coupon', { params: { invoice: id }, body: { code }, idempotencyKey: key });
+  if (!done.ok) return { ok: false, message: Object.values(done.problem.errors)[0]?.[0] ?? (done.problem.title || undefined) };
+  refresh();
+  return { ok: true, invoice: done.data.data.id, message: done.data.message };
+}
+
+/**
+ * Sends proof of paying an invoice by hand: how, how much, the payer's own
+ * day, the transfer's number and the receipt. It waits for the academy;
+ * one key per submit, so a retry sends it once.
+ */
+export async function sendProof(id: string, form: FormData, key: string): Promise<Result> {
+  const sent = new FormData();
+  for (const name of ['method', 'amount', 'paid_on', 'reference', 'note']) {
+    const value = String(form.get(name) ?? '').trim();
+    if (value) sent.set(name, value);
+  }
+  const file = form.get('file');
+  if (file instanceof File && file.size > 0) sent.set('file', file, file.name || 'receipt');
+  return result(await send('post', '/v1/family/invoices/{invoice}/proofs', { params: { invoice: id }, form: sent, idempotencyKey: key }));
+}
+
+export type { Rating };
+
+/**
+ * Makes the invoice for extra lessons on a course this person pays for; it
+ * is then paid like any other. One key per press, so a retry makes one.
+ */
+export async function buyExtraLessons(enrollment: string, learnerId: string, lessons: number, key: string): Promise<Result & { number?: string; total?: string }> {
+  const made = await send<{ number: string; total: string }>('post', '/v1/family/enrollments/{enrollment}/extra-lessons', {
+    params: { enrollment },
+    body: { lessons, learner_id: learnerId },
+    idempotencyKey: key,
+  });
+  if (!made.ok) return result(made);
+  refresh();
+  return { ok: true, number: made.data.number, total: made.data.total };
+}
+
+/** A guardian agrees to a child's account, to the wording (version) they read. */
+export async function grantConsent(student: string, version: number, agree: boolean): Promise<Result> {
+  return result(await send('post', '/v1/family/consents/{student}', { params: { student }, body: { agree, version } }));
+}
+
+/**
+ * A guardian adds their own child («إضافة طفل», J5a), agreeing to the consent
+ * wording's version they read: the child, and the start flow to go to. One
+ * key per press, so a retry adds them once; refusals come back by field.
+ */
+export async function addChild(body: ChildBody, key: string): Promise<{ ok: true; child: AddedChild; message: string } | { ok: false; status: number; message?: string; errors: Record<string, string[]> }> {
+  const sent = await send<{ data: AddedChild; message: string }>('post', '/v1/family/children', { body, idempotencyKey: key });
+  if (!sent.ok) return { ok: false, status: sent.problem.status, message: sent.problem.title || undefined, errors: sent.problem.errors };
+  refresh();
+  return { ok: true, child: sent.data.data, message: sent.data.message };
+}
+
+/** A guardian takes their consent back: the child is signed out everywhere. */
+export async function withdrawConsent(student: string): Promise<Result> {
+  return result(await send('post', '/v1/family/consents/{student}/withdraw', { params: { student } }));
+}
+
+/**
+ * Says how a hifz page went (1 forgot, 2 hard, 3 good, 4 easy): the page's
+ * review for today, about the learner on screen. One key per press, so a
+ * retry counts once.
+ */
+export async function gradeHifzPage(learnerId: string, page: number, grade: number, key: string): Promise<Result> {
+  return result(
+    await send('post', '/v1/learning/hifz/pages/{page}/grade', {
+      params: { page: String(page) },
+      query: { learner_id: learnerId },
+      body: { grade },
+      idempotencyKey: key,
+    }),
+  );
+}
+
+/**
+ * Recites a hifz page (`audio`, a recording made in the browser): it is heard
+ * and checked in the background, and the hifz signal brings the result to the
+ * page. `off`: the academy has the check off, so the learner says how it went.
+ */
+export async function reciteHifzPage(learnerId: string, page: number, form: FormData): Promise<Result & { id?: string; off?: boolean }> {
+  const audio = form.get('audio');
+  if (!(audio instanceof File) || audio.size === 0) return { ok: false };
+  const sent = new FormData();
+  sent.set('audio', audio, audio.name || 'recitation.webm');
+  sent.set('learner_id', learnerId);
+  const done = await send<{ data: { id: string } }>('post', '/v1/learning/hifz/pages/{page}/recitations', { params: { page: String(page) }, form: sent });
+  if (!done.ok) return { ...result(done), off: done.problem.extra?.reason === 'off' };
+  return { ok: true, id: done.data.data.id };
+}

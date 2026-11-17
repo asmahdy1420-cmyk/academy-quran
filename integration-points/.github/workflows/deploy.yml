@@ -1,0 +1,405 @@
+name: deploy
+
+# Ships the app to the server (infra/deploy/README.md):
+#   1. builds the production image (apps/api/Dockerfile.prod);
+#   2. rehearses the deploy on this GitHub machine: infra/deploy/deploy.sh with
+#      the demo data, then the panels, the API sign-in (roles, row-level security
+#      and data together), links on https behind a proxy, a live WebSocket
+#      connection through the web container, and the portal with a
+#      teacher's session; then backups: a drill, one to a moment before a change,
+#      and the live database put back to that moment and switched back;
+#   3. on main, once every api and web check on the commit has passed (or when run
+#      by hand from the Actions tab), pushes the image to GitHub's registry and
+#      runs deploy.sh on the server over SSH.
+# A push to another branch that touches the image or the deploy does 1 and 2 only.
+
+on:
+  # The image holds the API and the portal: each one's checks finishing on main starts it,
+  # and it ships when none of them failed (the checks job).
+  workflow_run:
+    workflows: [api, web]
+    types: [completed]
+    branches: [main]
+  push:
+    branches-ignore: [main]
+    paths: ['apps/api/Dockerfile.prod', 'apps/web/**', 'infra/deploy/**', '.dockerignore', '.github/workflows/deploy.yml']
+  workflow_dispatch:
+    inputs:
+      demo_data:
+        description: Load the demo academies on the server (skipped when they are there)
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-${{ github.event_name == 'push' && github.ref || 'production' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # On main both the api and the web checks start this workflow: ship only once
+  # every one of them that ran on the commit has passed (the last to finish ships).
+  checks:
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      go: ${{ steps.runs.outputs.go }}
+    steps:
+      # Only main's own runs count: the same commit also runs on its working branch first.
+      - name: Every api and web run on this commit has passed
+        id: runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ "$EVENT" != workflow_run ]; then echo "go=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          go=true
+          for workflow in api.yml web.yml; do
+            state=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$SHA&event=push&branch=main&per_page=1" \
+              --jq '.workflow_runs[0] | if . == null then "none" else .status + "/" + (.conclusion // "") end')
+            echo "$workflow: $state"
+            case "$state" in
+              none|completed/success) ;;
+              completed/*) echo "::warning::$workflow did not pass on ${SHA::12}: nothing ships"; go=false ;;
+              *) echo "$workflow is still running: it ships this commit if it passes"; go=false ;;
+            esac
+          done
+          echo "go=$go" >> "$GITHUB_OUTPUT"
+
+  image:
+    needs: checks
+    if: needs.checks.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+      publish: ${{ steps.name.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Image name
+        id: name
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          PUBLISH: ${{ github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "image=$repo:${SHA::12}" >> "$GITHUB_OUTPUT"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile.prod
+          load: true
+          tags: ${{ steps.name.outputs.image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Rehearse the deploy on this machine
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/academy-lms"
+          mkdir -p "$dir/nginx"
+          cp infra/deploy/compose.yml infra/deploy/deploy.sh infra/deploy/postgres-init.sh infra/deploy/setup-nginx.sh \
+             infra/deploy/postgres-start.sh infra/deploy/pg_hba.conf infra/deploy/backup.sh infra/deploy/restore.sh \
+             infra/deploy/offsite.sh infra/deploy/console.sh apps/api/database/setup/roles.sql "$dir/"
+          cp infra/deploy/nginx/academy-lms.conf "$dir/nginx/"
+          echo "dir=$dir" >> "$GITHUB_ENV"
+
+          DOMAIN=lms.example DEMO_DATA=1 bash "$dir/deploy.sh" "$IMAGE" </dev/null
+          # A second run is an update, here of a server whose .env is older than this version (a
+          # setting missing, one changed by hand): same port, same data, the missing one added, the other kept.
+          sed -i '/^CORS_ALLOWED_ORIGINS=/d; s/^HEALTH_ALERT_TO=.*/HEALTH_ALERT_TO=ops@lms.example/' "$dir/.env"
+          DOMAIN=lms.example bash "$dir/deploy.sh" "$IMAGE" </dev/null
+          grep -qx 'CORS_ALLOWED_ORIGINS=' "$dir/.env" && grep -qx 'HEALTH_ALERT_TO=ops@lms.example' "$dir/.env" \
+            || { echo "the update did not add the missing setting, or changed one set by hand"; exit 1; }
+
+          setting() { grep -E "^$1=" "$dir/.env" | cut -d= -f2-; }
+          base="http://127.0.0.1:$(setting HTTP_PORT)"
+          check() {
+            local want="$1" host="$2" path="$3"; shift 3
+            local got
+            got="$(curl -s -o /tmp/body -w '%{http_code}' -H "Host: $host" "$@" "$base$path" || true)"
+            echo "$got $host$path"
+            [ "$got" = "$want" ] || { head -c 3000 /tmp/body; echo; exit 1; }
+          }
+
+          check 200 lms.example /up
+          check 200 demo.lms.example /admin/login
+          check 200 demo.lms.example /teach/login
+          check 200 demo.lms.example /my/login
+          check 200 lms.example /console/login
+          check 404 lms.example /admin/login
+          check 200 demo.lms.example /api/v1/branding -H 'Accept: application/json'
+
+          # The platform team's script (console-owner.yml): a console admin made an owner; anything not an email refused;
+          # someone new added as an owner with a name and their password on stdin, never printed; a short password refused.
+          printf 'admin@platform.test\n' | bash "$dir/console.sh" owner | tee /tmp/owner
+          grep -q 'is an owner' /tmp/owner || { echo "console.sh did not make the admin an owner"; exit 1; }
+          if printf 'admin; rm -rf /\n' | bash "$dir/console.sh" owner; then echo "console.sh took something not an email"; exit 1; fi
+          printf 'rehearsal@platform.test\nRehearsal Owner\nrehearsal-password-1\n' | bash "$dir/console.sh" owner 2>&1 | tee /tmp/owner
+          grep -q 'Added rehearsal@platform.test as an owner' /tmp/owner || { echo "console.sh did not add the new owner"; exit 1; }
+          if grep -q 'rehearsal-password-1' /tmp/owner; then echo "console.sh printed the password"; exit 1; fi
+          if printf 'short@platform.test\nShort\nshort\n' | bash "$dir/console.sh" owner; then echo "console.sh took a short password"; exit 1; fi
+          # A client academy opened from GitHub (academy-new.yml): made with its owner, the welcome link never printed;
+          # the same address again, or anything not a JSON object, refused.
+          academy='{"slug":"rehearsal","name_ar":"أكاديمية التجربة","name_en":"Rehearsal","country":"QA","currency":"QAR","timezone":"Asia/Qatar","locale":"ar","owner_name":"Rehearsal Owner","owner_email":"owner@rehearsal.test","plan":"growth","features_off":["quran"],"hidden":["games"],"reason":"Deploy rehearsal"}'
+          printf '%s\n' "$academy" | bash "$dir/console.sh" academy 2>&1 | tee /tmp/academy
+          grep -q 'Academy opened: https://rehearsal.lms.example' /tmp/academy || { echo "console.sh did not open the academy"; exit 1; }
+          if grep -q '/welcome/' /tmp/academy; then echo "console.sh printed the welcome link"; exit 1; fi
+          if printf '%s\n' "$academy" | bash "$dir/console.sh" academy; then echo "console.sh took an address already taken"; exit 1; fi
+          if printf 'not json\n' | bash "$dir/console.sh" academy; then echo "console.sh took something not JSON"; exit 1; fi
+          check 200 rehearsal.lms.example /admin/login
+
+          # Behind the server's nginx (X-Forwarded-Proto: https), links stay on https.
+          check 200 demo.lms.example /admin/login -H 'X-Forwarded-Proto: https' -H 'X-Forwarded-Port: 443'
+          grep -q 'https://demo.lms.example/' /tmp/body || { echo "links are not on https"; exit 1; }
+          # Filament's published assets are in the image.
+          css="$( (grep -oE 'href="https://demo.lms.example/[^"]+\.css[^"]*"' /tmp/body || true) | head -n 1 | sed -E 's#href="https://demo.lms.example##; s#"$##')"
+          [ -n "$css" ] || { echo "no stylesheet on the sign-in page"; exit 1; }
+          check 200 demo.lms.example "$css"
+
+          # The security headers: on the app's pages (with HSTS over https), and from Caddy on static files.
+          secured() {
+            local host="$1" path="$2"; shift 2
+            curl -s -o /dev/null -D /tmp/headers -H "Host: $host" "$@" "$base$path"
+            for want in 'x-content-type-options: nosniff' 'x-frame-options: SAMEORIGIN' 'referrer-policy: strict-origin-when-cross-origin' \
+                        "content-security-policy: base-uri 'self'; object-src 'none'; frame-ancestors 'self'"; do
+              grep -qiF "$want" /tmp/headers || { echo "no '$want' on $host$path"; cat /tmp/headers; exit 1; }
+            done
+            echo "headers ok $host$path"
+          }
+          secured demo.lms.example /admin/login -H 'X-Forwarded-Proto: https'
+          grep -qi '^strict-transport-security: max-age=' /tmp/headers || { echo "no HSTS over https"; exit 1; }
+          secured demo.lms.example /api/v1/branding -H 'Accept: application/json'
+          secured demo.lms.example "$css"
+
+          # Signing in through the API with the server's own demo password (a teacher: the owner
+          # must set up two-step sign-in in the back office first, and is told so).
+          check 200 demo.lms.example /api/v1/auth/login -X POST -H 'Accept: application/json' -H 'Content-Type: application/json' \
+            --data "{\"login\":\"khaled@demo.test\",\"password\":\"$(setting DEMO_PASSWORD)\",\"device_name\":\"rehearsal\"}"
+          grep -q 'token' /tmp/body || { echo "no token in the sign-in answer"; exit 1; }
+          check 403 demo.lms.example /api/v1/auth/login -X POST -H 'Accept: application/json' -H 'Content-Type: application/json' \
+            --data "{\"login\":\"owner@demo.test\",\"password\":\"$(setting DEMO_PASSWORD)\",\"device_name\":\"rehearsal\"}"
+          grep -q 'two-factor-setup-required' /tmp/body || { echo "the owner signed in without two-step sign-in"; exit 1; }
+          check 422 demo.lms.example /api/v1/auth/login -X POST -H 'Accept: application/json' -H 'Content-Type: application/json' \
+            --data '{"login":"owner@demo.test","password":"password","device_name":"rehearsal"}'
+
+          # Live screens: a browser's WebSocket reaches Reverb through the web container (/app/<key>).
+          ws="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H 'Host: demo.lms.example' \
+            -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
+            -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+            "$base/app/$(setting REVERB_APP_KEY)?protocol=7&client=js&version=8.4.0" || true)"
+          echo "$ws websocket /app/<key>"
+          [ "$ws" = 101 ]
+
+          # The portal, through the web container: its page in the academy's name, its own
+          # assets, a redirect to sign in that stays on https, and a teacher's day, which
+          # the portal reads from the API back through the web container.
+          for _ in $(seq 1 30); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: demo.lms.example' "$base/ar/sign-in")" = 200 ] && break
+            sleep 1
+          done
+          check 302 demo.lms.example / -H 'Accept: text/html'
+          check 200 demo.lms.example /ar/sign-in
+          grep -q 'أكاديمية النور' /tmp/body || { echo "the portal's sign-in page does not name the academy"; exit 1; }
+          asset="$( (grep -oE '/_next/static/[^"]+\.(css|js)' /tmp/body || true) | head -n 1)"
+          [ -n "$asset" ] || { echo "no portal asset on the sign-in page"; exit 1; }
+          check 200 demo.lms.example "$asset"
+          secured demo.lms.example /ar/sign-in -H 'X-Forwarded-Proto: https'
+          grep -qi '^strict-transport-security: max-age=' /tmp/headers || { echo "no HSTS on the portal over https"; exit 1; }
+          check 307 demo.lms.example /ar/teach -H 'X-Forwarded-Proto: https'
+          location="$(curl -s -o /dev/null -w '%{redirect_url}' -H 'Host: demo.lms.example' -H 'X-Forwarded-Proto: https' "$base/ar/teach")"
+          echo "-> $location"
+          [ "$location" = "https://demo.lms.example/ar/sign-in?next=%2Far%2Fteach" ] || { echo "the portal's redirect is not on https"; exit 1; }
+          check 200 demo.lms.example /api/v1/auth/login -X POST -H 'Accept: application/json' -H 'Content-Type: application/json' \
+            --data "{\"login\":\"khaled@demo.test\",\"password\":\"$(setting DEMO_PASSWORD)\",\"device_name\":\"rehearsal\"}"
+          teacher="$(python3 -c 'import json; print(json.load(open("/tmp/body"))["token"])')"
+          check 200 demo.lms.example /ar/teach -H "Cookie: lms_session=$teacher"
+          grep -q 'خالد' /tmp/body || { echo "the portal does not show the teacher's day"; exit 1; }
+
+          # Clock rules: the image's PHP reads current tzdata (Morocco on UTC+0 for good from 20 September
+          # 2026, tzdata 2026c), or every lesson there would sit an hour off.
+          morocco="$(docker run --rm --entrypoint php "$IMAGE" -r 'echo (new DateTimeImmutable("2026-12-01 12:00 UTC"))->setTimezone(new DateTimeZone("Africa/Casablanca"))->format("H");')"
+          [ "$morocco" = 12 ] || { echo "the image's PHP has old time zone data (Casablanca at 12:00 UTC: $morocco)"; exit 1; }
+
+          # Backups: the WAL archive, a backup, a restore drill to the latest moment and to one
+          # before a change, then the live database put back to that moment and switched back again.
+          sql() { docker compose -p academy-lms -f "$dir/compose.yml" exec -T postgres psql -X -q -U postgres -d lms -Atc "$1"; }
+          sql "create table rehearsal_marker (at timestamptz default now())"
+          (cd "$dir" && bash restore.sh now)
+          sleep 2; before="$(date -u '+%F %T')"; sleep 2
+          sql "insert into rehearsal_marker default values"
+          sql "select pg_switch_wal()" >/dev/null; sleep 5
+          drill() { (cd "$dir" && BACKUP_DRILL_SQL="select count(*) from rehearsal_marker" bash restore.sh check "$@") | tee /tmp/drill; }
+          drill;           grep -q 'drill ok: .*check: 1$' /tmp/drill || { echo "the drill to the latest moment is not right"; exit 1; }
+          drill "$before"; grep -q 'drill ok: .*check: 0$' /tmp/drill || { echo "the drill to a moment before the change is not right"; exit 1; }
+          [ "$(sql "select count(*) from platform_backups where status = 'ok'")" -ge 5 ] || { sql "table platform_backups"; exit 1; }
+          printf 'academy-lms\n' | (cd "$dir" && bash restore.sh to "$before")
+          [ "$(sql "select count(*) from rehearsal_marker")" = 0 ] || { echo "the restore did not go back"; exit 1; }
+          check 200 demo.lms.example /api/v1/auth/login -X POST -H 'Accept: application/json' -H 'Content-Type: application/json' \
+            --data "{\"login\":\"khaled@demo.test\",\"password\":\"$(setting DEMO_PASSWORD)\",\"device_name\":\"rehearsal\"}"
+          printf 'academy-lms\n' | (cd "$dir" && bash restore.sh back academy-lms_postgres-data)
+          [ "$(sql "select count(*) from rehearsal_marker")" = 1 ] || { echo "switching back did not bring the change back"; exit 1; }
+          (cd "$dir" && bash restore.sh list)
+
+          # The off-site copy: a bucket on this machine (rclone's S3 server), a key made by the image's
+          # own age, the backups sent to the bucket encrypted, then a restore drill from the bucket alone
+          # with the private key, and the settings of then fetched back. The offsite part started idle.
+          docker compose -p academy-lms -f "$dir/compose.yml" logs offsite | grep -q 'off-site copy off' \
+            || { docker compose -p academy-lms -f "$dir/compose.yml" logs offsite; echo "the offsite part is not idle without a bucket"; exit 1; }
+          docker run -d --name rehearsal-bucket --network academy-lms_internal --network-alias rehearsal-bucket --entrypoint sh \
+            rclone/rclone:1.68.2 -c 'mkdir -p /data/rehearsal && exec rclone serve s3 /data --addr :8333 --auth-key rehearsal,rehearsal-secret' >/dev/null
+          docker run --rm --entrypoint age-keygen "$IMAGE" > "$RUNNER_TEMP/offsite.key" 2>/dev/null
+          chmod 600 "$RUNNER_TEMP/offsite.key"
+          offsite_setting() { sed -i "s#^$1=.*#$1=$2#" "$dir/.env"; }
+          offsite_setting OFFSITE_S3_ENDPOINT http://rehearsal-bucket:8333
+          offsite_setting OFFSITE_S3_BUCKET rehearsal
+          offsite_setting OFFSITE_S3_ACCESS_KEY rehearsal
+          offsite_setting OFFSITE_S3_SECRET_KEY rehearsal-secret
+          offsite_setting OFFSITE_AGE_RECIPIENT "$(sed -n 's/^# public key: //p' "$RUNNER_TEMP/offsite.key")"
+          docker compose -p academy-lms -f "$dir/compose.yml" run --rm --no-deps -T offsite now
+          (cd "$dir" && bash restore.sh offsite) | tee /tmp/offsite
+          grep -q '^  base/' /tmp/offsite && grep -q '^  config/' /tmp/offsite || { echo "the bucket lacks a base backup or the settings"; exit 1; }
+          (cd "$dir" && BACKUP_DRILL_SQL="select count(*) from rehearsal_marker" bash restore.sh check offsite "$RUNNER_TEMP/offsite.key") | tee /tmp/drill
+          grep -q 'drill ok: .*check: 1$' /tmp/drill || { echo "the drill from the off-site copy is not right"; exit 1; }
+          (cd "$dir" && bash restore.sh fetch "$RUNNER_TEMP/offsite.key" latest)
+          cmp <(sort "$dir/.env") <(sort "$dir/.env.offsite") || { echo "the fetched settings are not this server's"; exit 1; }
+          rm -f "$dir/.env.offsite" "$dir/postgres.env.offsite"; docker volume rm academy-lms_offsite-restore >/dev/null
+          docker compose -p academy-lms -f "$dir/compose.yml" up -d offsite
+          for _ in $(seq 1 20); do docker compose -p academy-lms -f "$dir/compose.yml" logs offsite | grep -q 'off-site copy to' && break; sleep 2; done
+          docker compose -p academy-lms -f "$dir/compose.yml" logs offsite | grep -q 'off-site copy to' || { echo "the offsite part did not start sending"; exit 1; }
+
+          # Health for an uptime monitor: nothing without the token; with it, every check and none
+          # failing once the scheduler and the worker, just restarted twice, have beaten again
+          # (the scheduler on the minute, the worker with the job it sends).
+          check 404 lms.example /health
+          healthy=""
+          for _ in $(seq 1 30); do
+            got="$(curl -s -o /tmp/body -w '%{http_code}' -H 'Host: lms.example' -H "Authorization: Bearer $(setting HEALTH_TOKEN)" "$base/health" || true)"
+            [ "$got" = 200 ] && { healthy=1; break; }
+            sleep 6
+          done
+          cat /tmp/body; echo
+          if [ -z "$healthy" ]; then
+            docker compose -p academy-lms -f "$dir/compose.yml" exec -T web php artisan platform:health || true
+            echo "the stack is not healthy"; exit 1
+          fi
+          python3 -c 'import json,sys; d=json.load(open("/tmp/body")); sys.exit(0 if d["checks"]["backups"] == "ok" and d["checks"]["drill"] == "ok" else 1)' \
+            || { echo "the health check does not see the backups and the drill"; exit 1; }
+          docker compose -p academy-lms -f "$dir/compose.yml" exec -T web php artisan platform:health
+
+          # Every part of the stack is up, and only the web port is published, on 127.0.0.1.
+          docker compose -p academy-lms -f "$dir/compose.yml" ps
+          [ "$(docker compose -p academy-lms -f "$dir/compose.yml" ps --status running -q | wc -l)" = 10 ]
+          # None of them fell over and was started again by Docker since it last came up.
+          restarts="$(docker inspect --format '{{.Name}} {{.RestartCount}}' $(docker compose -p academy-lms -f "$dir/compose.yml" ps -q) | awk '$2 != 0')"
+          [ -z "$restarts" ] || { echo "restarted by Docker: $restarts"; exit 1; }
+          # Only web and postgres have a health check (the image's own, on Caddy's admin port, is off).
+          checked="$(docker ps --filter label=com.docker.compose.project=academy-lms --format '{{.Names}} {{.Status}}' | grep -c 'health' || true)"
+          [ "$checked" = 2 ] || { echo "expected 2 containers with a health check, found $checked"; exit 1; }
+          ports="$(docker ps --filter label=com.docker.compose.project=academy-lms --format '{{.Ports}}' | grep -o '[0-9.]*:[0-9]*->' | sort -u)"
+          echo "published: $ports"
+          [ "$ports" = "127.0.0.1:$(setting HTTP_PORT)->" ]
+
+      - name: What the stack said
+        if: failure()
+        run: docker compose -p academy-lms -f "$dir/compose.yml" logs --tail=120 || true
+
+      - name: Push to GitHub's registry
+        if: steps.name.outputs.publish == 'true'
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}
+          REPO: ${{ steps.name.outputs.repo }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE"
+          docker tag "$IMAGE" "$REPO:latest"
+          docker push "$REPO:latest"
+
+  deploy:
+    needs: image
+    if: needs.image.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    env:
+      # The server and its user (not secret: the domain already points at it); a
+      # secret or variable of the same name wins. The key or password is only ever a secret.
+      HOST: ${{ secrets.DEPLOY_HOST || vars.DEPLOY_HOST || '145.223.99.175' }}
+      SSH_USER: ${{ secrets.DEPLOY_USER || vars.DEPLOY_USER || 'lukas-demo' }}
+      SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      SSH_PASSWORD: ${{ secrets.DEPLOY_PASSWORD }}
+      KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      SSH_PORT: ${{ vars.DEPLOY_SSH_PORT || '22' }}
+      DIR: ${{ vars.DEPLOY_DIR || 'academy-lms' }}
+      DOMAIN: ${{ vars.DEPLOY_DOMAIN || 'progma.store' }}
+      IMAGE: ${{ needs.image.outputs.image }}
+      DEMO_DATA: ${{ inputs.demo_data && '1' || '0' }}
+    steps:
+      - name: Server settings
+        id: ready
+        run: |
+          if [ -z "$HOST" ] || [ -z "$SSH_USER" ] || { [ -z "$SSH_KEY" ] && [ -z "$SSH_PASSWORD" ]; }; then
+            echo "::warning title=Not deployed::Add the repository secret DEPLOY_SSH_KEY (or DEPLOY_PASSWORD) for $SSH_USER@$HOST, then run this workflow again (infra/deploy/README.md)."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.ready.outputs.go == 'true'
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Deploy over SSH
+        if: steps.ready.outputs.go == 'true'
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          if [ -n "$KNOWN_HOSTS" ]; then
+            printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            echo "::warning::DEPLOY_KNOWN_HOSTS is not set: the server's key is trusted as first seen (infra/deploy/README.md)."
+            ssh-keyscan -p "$SSH_PORT" -H "$HOST" > ~/.ssh/known_hosts 2>/dev/null
+          fi
+
+          if [ -n "$SSH_KEY" ]; then
+            printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+            ssh_cmd=(ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -p "$SSH_PORT")
+            scp_cmd=(scp -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -P "$SSH_PORT")
+          else
+            sudo apt-get install -y -qq sshpass >/dev/null
+            export SSHPASS="$SSH_PASSWORD"
+            ssh_cmd=(sshpass -e ssh -o PubkeyAuthentication=no -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -p "$SSH_PORT")
+            scp_cmd=(sshpass -e scp -o PubkeyAuthentication=no -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -P "$SSH_PORT")
+          fi
+          target="$SSH_USER@$HOST"
+
+          "${ssh_cmd[@]}" "$target" "mkdir -p '$DIR/nginx' && chmod 700 '$DIR'"
+          "${scp_cmd[@]}" infra/deploy/compose.yml infra/deploy/deploy.sh infra/deploy/postgres-init.sh \
+            infra/deploy/setup-nginx.sh infra/deploy/postgres-start.sh infra/deploy/pg_hba.conf \
+            infra/deploy/backup.sh infra/deploy/restore.sh infra/deploy/offsite.sh infra/deploy/console.sh apps/api/database/setup/roles.sql "$target:$DIR/"
+          "${scp_cmd[@]}" infra/deploy/nginx/academy-lms.conf "$target:$DIR/nginx/"
+
+          # The registry login travels on stdin (user, then token), never on a command line.
+          printf '%s\n%s\n' "$GITHUB_ACTOR" "$REGISTRY_TOKEN" \
+            | "${ssh_cmd[@]}" "$target" "cd '$DIR' && DOMAIN='$DOMAIN' DEMO_DATA='$DEMO_DATA' bash deploy.sh '$IMAGE'"

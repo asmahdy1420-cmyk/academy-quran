@@ -1,0 +1,160 @@
+name: web
+
+on:
+  push:
+    branches: [main, 'claude/**']
+    # The end-to-end run drives the real API: a change there can break a portal flow too.
+    paths: ['apps/web/**', 'apps/api/**', 'packages/openapi/**', '.github/workflows/web.yml']
+  pull_request:
+    paths: ['apps/web/**', 'apps/api/**', 'packages/openapi/**', '.github/workflows/web.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+
+      # What the portal runs with: a known high or critical vulnerability fails the build.
+      - name: Known vulnerabilities in dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      # The portal's calls are typed from packages/openapi/openapi.json: a path the API
+      # no longer has fails the typecheck, so the generated types must match the document.
+      - name: API types up to date
+        run: |
+          npm run api:types
+          git diff --exit-code -- src/lib/api/schema.ts || {
+            echo "::error::apps/web/src/lib/api/schema.ts is out of date: run 'npm run api:types' in apps/web and commit it."; exit 1; }
+
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: '1'
+
+  # The portals end to end (phone and desktop), against the real API with the demo data.
+  e2e:
+    # Playwright 1.56 installs its browser's system packages only up to Ubuntu 24.04 (ubuntu-latest moved on).
+    runs-on: ubuntu-24.04
+    needs: check
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      # The demo academy's own host (its slug on .env.example's PLATFORM_DOMAIN: E2eResetSeeder's academy_host)
+      # reaches this machine, as its DNS does a server: the gateway's page and the way back (API on 8000, the
+      # portal's paths routed by the specs as Caddy does) and the live socket (Reverb on 8080).
+      - name: The academy's host on this machine
+        run: echo "127.0.0.1 demo.lms.test" | sudo tee -a /etc/hosts
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_pgsql, pgsql, redis, intl, mbstring, zip
+          coverage: none
+
+      - name: Composer cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/composer/files
+          key: composer-${{ hashFiles('apps/api/composer.lock') }}
+          restore-keys: composer-
+
+      - name: API with the demo data
+        working-directory: apps/api
+        env:
+          PGPASSWORD: postgres
+          COMPOSER_AUTH: '{"github-oauth": {"github.com": "${{ secrets.GITHUB_TOKEN }}"}}'
+        run: |
+          composer install --no-interaction --prefer-dist --no-progress
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 \
+            -v db=lms -v owner_password=owner -v app_password=app -v platform_password=platform \
+            -f database/setup/roles.sql
+          cp .env.example .env
+          # One account per role drives every page twice at machine speed: more than the API's per-person limit
+          # a minute (a person opening pages never comes near it), so this run alone raises it.
+          printf 'API_PER_MINUTE=6000\nAPI_GUEST_PER_MINUTE=2400\n' >> .env
+          php artisan key:generate
+          php artisan migrate --database=pgsql_owner --force
+          # The Quran's text (Tanzil's files, checked), so the demo comes with its Quran program (quran.spec.ts).
+          php artisan quran:text --fetch
+          php artisan db:seed --force
+          # A few workers: a portal page asks the API for several things at once.
+          PHP_CLI_SERVER_WORKERS=4 nohup php artisan serve --host=127.0.0.1 --port=8000 > ../../api-serve.log 2>&1 &
+          # Live pages: Reverb (the browsers' sockets, .env.example's local keys) and the relay
+          # that turns the database's signals into broadcasts.
+          nohup php artisan reverb:start --host=127.0.0.1 --port=8080 > ../../reverb.log 2>&1 &
+          nohup php artisan live:relay > ../../relay.log 2>&1 &
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Portal (production build)
+        working-directory: apps/web
+        env:
+          API_INTERNAL_URL: http://127.0.0.1:8000
+          ACADEMY: demo
+        run: |
+          npm ci
+          npm run build
+          nohup npm run start > ../../web-serve.log 2>&1 &
+          npx playwright install --with-deps chromium
+          for i in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:3000/ar/sign-in && break; sleep 2; done
+
+      # The global setup runs the API's E2eResetSeeder (php artisan in apps/api, with its .env) before the specs;
+      # the class page tests get a lesson open now and the receipt test approves through artisan tinker, as the
+      # back office would: no test skips for want of data, at any hour.
+      - name: End-to-end tests
+        working-directory: apps/web
+        env:
+          E2E_LIVE: '1'
+        run: npx playwright test
+
+      - name: Logs and report when something failed
+        if: failure()
+        run: |
+          tail -n 80 api-serve.log web-serve.log reverb.log relay.log apps/api/storage/logs/laravel.log 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          retention-days: 7

@@ -1,0 +1,253 @@
+@import 'tailwindcss';
+
+/*
+ * The academy's look: its colours arrive as --brand, --attention, --danger,
+ * --info and --neutral on <html> (from GET /branding), and every screen uses
+ * these tokens, never a hard-coded brand colour. Tints are mixed from them.
+ */
+@theme {
+  --color-brand: var(--brand);
+  --color-brand-strong: color-mix(in oklab, var(--brand) 82%, black);
+  --color-brand-soft: color-mix(in oklab, var(--brand) 12%, white);
+  --color-brand-line: color-mix(in oklab, var(--brand) 30%, white);
+  --color-attention: var(--attention);
+  --color-attention-soft: color-mix(in oklab, var(--attention) 14%, white);
+  --color-danger: var(--danger);
+  --color-danger-soft: color-mix(in oklab, var(--danger) 10%, white);
+  --color-info: var(--info);
+  --color-info-soft: color-mix(in oklab, var(--info) 12%, white);
+  --color-ink: color-mix(in oklab, var(--neutral) 30%, #1c1917);
+  --color-muted: var(--neutral);
+  --color-line: color-mix(in oklab, var(--neutral) 18%, white);
+  --color-paper: color-mix(in oklab, var(--neutral) 4%, white);
+  /*
+   * A group lesson's own tone (docs/architecture/02, section 25), so a group
+   * never reads as a private lesson: between the academy's info and brand
+   * colours (mixed along the hue), never either one, with its tints.
+   */
+  --color-group: color-mix(in oklch, var(--info) 62%, var(--brand));
+  --color-group-strong: color-mix(in oklab, var(--color-group) 78%, black);
+  --color-group-soft: color-mix(in oklab, var(--color-group) 11%, white);
+  --color-group-line: color-mix(in oklab, var(--color-group) 34%, white);
+  --radius-card: var(--radius-lg);
+  --radius-control: var(--radius-md);
+  --font-sans: var(--font-body), var(--font-plex-latin), var(--font-plex-arabic), system-ui, sans-serif;
+  --font-heading: var(--font-head), var(--font-plex-latin), var(--font-plex-arabic), system-ui, sans-serif;
+}
+
+/*
+ * The Quran's words (the shared mushaf, the mistakes notebook) in Amiri Quran,
+ * whose variable only those parts carry (components/mushaf/font.ts); inline,
+ * so the utility reads it on the element itself.
+ */
+@theme inline {
+  --font-quran: var(--font-amiri-quran), 'Amiri Quran', serif;
+}
+
+html {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  min-height: 100dvh;
+  background: var(--color-paper);
+}
+
+h1, h2, h3 {
+  font-family: var(--font-heading);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+/* Motion: things come in gently, and only when the person allows motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .appear {
+    animation: appear 380ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+  }
+  .stagger > * {
+    animation: appear 380ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+  }
+  .stagger > *:nth-child(2) { animation-delay: 50ms; }
+  .stagger > *:nth-child(3) { animation-delay: 100ms; }
+  .stagger > *:nth-child(4) { animation-delay: 150ms; }
+  .stagger > *:nth-child(5) { animation-delay: 200ms; }
+  .stagger > *:nth-child(n + 6) { animation-delay: 240ms; }
+  .lift {
+    transition: transform 160ms ease, box-shadow 160ms ease;
+  }
+  .lift:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px -12px color-mix(in oklab, var(--neutral) 45%, transparent);
+  }
+}
+
+@keyframes appear {
+  from { opacity: 0; transform: translateY(6px); }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* A bar that fills from the start (the reading side). */
+  .bar-fill {
+    animation: bar-fill 700ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+    transform-origin: left;
+  }
+  [dir='rtl'] .bar-fill {
+    transform-origin: right;
+  }
+}
+
+@keyframes bar-fill {
+  from { transform: scaleX(0); }
+}
+
+/*
+ * A student's own look (FamilyView::stage of the person signed in), as in the
+ * app and the panel: fonts, corners and the page's neutral. Guardians and
+ * adults keep the classic look (the academy's). Colours stay the academy's.
+ */
+@theme {
+  --color-reward: #f2b53a;
+  --color-reward-soft: #fff1cc;
+}
+
+[data-stage='kids'] {
+  --font-sans: var(--font-baloo), var(--font-plex-arabic), system-ui, sans-serif;
+  --font-heading: var(--font-baloo), var(--font-plex-arabic), system-ui, sans-serif;
+  --radius-card: 1.625rem;
+  --radius-control: 1.125rem;
+  --color-paper: #f3f7fb;
+  font-family: var(--font-sans);
+  font-size: 16px;
+}
+
+[data-stage='middle'] {
+  --font-sans: var(--font-rubik), var(--font-plex-arabic), system-ui, sans-serif;
+  --font-heading: var(--font-rubik), var(--font-plex-arabic), system-ui, sans-serif;
+  --radius-card: 1.125rem;
+  --radius-control: 0.875rem;
+  --color-paper: #f4f4f6;
+  font-family: var(--font-sans);
+}
+
+[data-stage='teen'] {
+  --font-sans: var(--font-plex-latin), var(--font-plex-arabic), system-ui, sans-serif;
+  --font-heading: var(--font-plex-latin), var(--font-plex-arabic), system-ui, sans-serif;
+  --radius-card: 0.625rem;
+  --radius-control: 0.625rem;
+  --color-paper: #f8fafc;
+  --color-line: #e2e8f0;
+  font-family: var(--font-sans);
+}
+
+[data-stage] {
+  background: var(--color-paper);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* The kids' "you're here" stop bobs gently. */
+  .bob {
+    animation: bob 1.6s ease-in-out infinite;
+  }
+  /* A reward that pops in when it becomes ready. */
+  .pop {
+    animation: pop 420ms cubic-bezier(0.2, 1.4, 0.4, 1) backwards;
+  }
+  /* A reward waiting to be collected nudges now and then. */
+  .nudge {
+    animation: nudge 2.6s ease-in-out 1.2s infinite backwards;
+  }
+  /* Something waiting on someone else breathes softly (a proposal in review). */
+  .pulse-soft {
+    animation: pulse-soft 2.4s ease-in-out infinite;
+  }
+}
+
+@keyframes bob {
+  50% { transform: translateY(-4px); }
+}
+
+@keyframes pop {
+  from { opacity: 0; transform: scale(0.6); }
+}
+
+@keyframes pulse-soft {
+  50% { opacity: 0.35; transform: scale(1.6); }
+}
+
+@keyframes nudge {
+  0%, 70%, 100% { transform: translateY(0); }
+  78% { transform: translateY(-3px); }
+  86% { transform: translateY(0); }
+  92% { transform: translateY(-1.5px); }
+}
+
+/*
+ * The zone chip (components/zone-chip.tsx): it comes in softly, floats a
+ * little, its time beats once a minute, its card rises from it, and its dot
+ * breathes. Transform and opacity only, and only when motion is allowed.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .zone-chip {
+    animation: zone-in 520ms cubic-bezier(0.2, 0.8, 0.2, 1) 400ms backwards;
+  }
+  .zone-pill {
+    animation: zone-float 7s ease-in-out 1s infinite backwards;
+  }
+  .zone-pill:hover,
+  .zone-pill[aria-expanded='true'] {
+    animation-play-state: paused;
+  }
+  .zone-beat {
+    display: inline-block;
+    animation: zone-beat 640ms cubic-bezier(0.2, 1.4, 0.4, 1) backwards;
+  }
+  .zone-card {
+    transform-origin: bottom left;
+    animation: zone-card 220ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+  }
+  [dir='rtl'] .zone-card {
+    transform-origin: bottom right;
+  }
+  .zone-dot {
+    animation: pulse-soft 2.4s ease-in-out infinite;
+  }
+  /* Hidden by the person: the card and the chip sink away together (then the account keeps it). */
+  .zone-chip.zone-leaving {
+    animation: zone-out 220ms ease-in forwards;
+  }
+  .zone-note {
+    animation: zone-in 320ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+  }
+}
+
+/* A page with its own bar at the bottom on a phone (the report's send button) keeps that corner for it. */
+@media (width < 64rem) {
+  body:has([data-hides-zone-chip]) .zone-chip {
+    display: none;
+  }
+}
+
+@keyframes zone-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.96); }
+}
+
+@keyframes zone-out {
+  to { opacity: 0; transform: translateY(10px) scale(0.94); }
+}
+
+@keyframes zone-float {
+  50% { transform: translateY(-3px); }
+}
+
+@keyframes zone-beat {
+  from { opacity: 0.4; transform: scale(1.12); }
+}
+
+@keyframes zone-card {
+  from { opacity: 0; transform: translateY(6px) scale(0.97); }
+}

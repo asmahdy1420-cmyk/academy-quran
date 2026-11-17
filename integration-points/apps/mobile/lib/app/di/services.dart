@@ -1,0 +1,158 @@
+import 'package:flutter/widgets.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+
+import '../../core/network/api_client.dart';
+import '../../core/realtime/live.dart';
+import '../../core/social/social_sign_in.dart';
+import '../../core/time/zones.dart';
+import '../../features/auth/data/auth_repository.dart';
+import '../../features/billing/data/billing_repository.dart';
+import '../../features/billing/data/cards_repository.dart';
+import '../../features/challenges/data/challenges_repository.dart';
+import '../../features/classroom/data/classroom_repository.dart';
+import '../../features/dashboard/data/family_repository.dart';
+import '../../features/dashboard/data/home_loader.dart';
+import '../../features/games/data/games_repository.dart';
+import '../../features/hifz/data/hifz_repository.dart';
+import '../../features/homework/data/homework_repository.dart';
+import '../../features/journey/data/journey_repository.dart';
+import '../../features/live/data/live_repository.dart';
+import '../../features/notifications/data/notifications_repository.dart';
+import '../../features/profile/data/profile_repository.dart';
+import '../../features/quran/data/quran_repository.dart';
+import '../../features/roadmap/data/learning_repository.dart';
+import '../../features/schedule/data/lessons_repository.dart';
+import '../../features/start/data/start_repository.dart';
+import '../../features/consent/data/consent_repository.dart';
+import '../../features/privacy/data/privacy_repository.dart';
+import '../../features/recordings/data/recordings_repository.dart';
+import '../../features/messages/data/messages_repository.dart';
+import '../../features/mushaf/data/mushaf_repository.dart';
+import '../../features/safeguarding/data/safeguarding_repository.dart';
+import '../../features/support/data/support_repository.dart';
+import '../../features/teaching/data/teaching_repository.dart';
+import '../../features/trial/data/trial_reports_repository.dart';
+import '../../features/trial/data/trial_repository.dart';
+
+/// The repositories every screen reads from, over one API client.
+class Services {
+  Services(this.api, {SocialSignIn? social})
+    : social = social ?? NativeSocialSignIn(),
+      auth = AuthRepository(api),
+      family = FamilyRepository(api),
+      lessons = LessonsRepository(api),
+      billing = BillingRepository(api),
+      cards = CardsRepository(api),
+      learning = LearningRepository(api),
+      homework = HomeworkRepository(api),
+      classroom = ClassroomRepository(api),
+      profile = ProfileRepository(api),
+      zones = ZoneRepository(api),
+      teaching = TeachingRepository(api),
+      challenges = ChallengesRepository(api),
+      games = GamesRepository(api),
+      journey = JourneyRepository(api),
+      hifz = HifzRepository(api),
+      mushaf = MushafRepository(api),
+      quran = QuranRepository(api),
+      notifications = NotificationsRepository(api),
+      consent = ConsentRepository(api),
+      privacy = PrivacyRepository(api),
+      recordings = RecordingsRepository(api),
+      support = SupportRepository(api),
+      safeguarding = SafeguardingRepository(api),
+      messages = MessagesRepository(api),
+      trial = TrialRepository(api),
+      trialReports = TrialReportsRepository(api),
+      start = StartRepository(api),
+      live = Live(source: LiveRepository(api), apiBaseUrl: api.dio.options.baseUrl) {
+    home = HomeLoader(lessons: lessons, billing: billing, learning: learning, homework: homework, journey: journey, trials: trialReports);
+  }
+
+  final ApiClient api;
+
+  /// The phone's Google and Apple sign-in.
+  final SocialSignIn social;
+  final AuthRepository auth;
+  final FamilyRepository family;
+  final LessonsRepository lessons;
+  final BillingRepository billing;
+
+  /// The payer's saved cards and automatic renewal.
+  final CardsRepository cards;
+  final LearningRepository learning;
+  final HomeworkRepository homework;
+  final ClassroomRepository classroom;
+  final ProfileRepository profile;
+
+  /// The time zones a person may choose.
+  final ZoneRepository zones;
+  final TeachingRepository teaching;
+  final ChallengesRepository challenges;
+  final GamesRepository games;
+  final JourneyRepository journey;
+  final HifzRepository hifz;
+
+  /// A Quran lesson's shared mushaf and the mistakes notebook.
+  final MushafRepository mushaf;
+
+  /// The Quran program: plans and portions, lessons' results, exams and certificates.
+  final QuranRepository quran;
+  final NotificationsRepository notifications;
+  final ConsentRepository consent;
+  final PrivacyRepository privacy;
+  final RecordingsRepository recordings;
+  final SupportRepository support;
+  final SafeguardingRepository safeguarding;
+  final MessagesRepository messages;
+
+  /// A free trial asked for or booked before signing in.
+  final TrialRepository trial;
+
+  /// A signed-in family's free trials: their reports, the offer and one more trial.
+  final TrialReportsRepository trialReports;
+
+  /// Starting a course and paying its invoice on the family's own.
+  final StartRepository start;
+
+  /// The person's own signals while the app is open (screens reload on them).
+  final Live live;
+  late final HomeLoader home;
+
+  Widget provide({required Widget child}) => MultiRepositoryProvider(
+    providers: [
+      RepositoryProvider.value(value: this),
+      RepositoryProvider.value(value: auth),
+      RepositoryProvider<SocialSignIn>.value(value: social),
+      RepositoryProvider.value(value: family),
+      RepositoryProvider.value(value: lessons),
+      RepositoryProvider.value(value: billing),
+      RepositoryProvider.value(value: cards),
+      RepositoryProvider.value(value: consent),
+      RepositoryProvider.value(value: privacy),
+      RepositoryProvider.value(value: recordings),
+      RepositoryProvider.value(value: support),
+      RepositoryProvider.value(value: safeguarding),
+      RepositoryProvider.value(value: messages),
+      RepositoryProvider.value(value: trial),
+      RepositoryProvider.value(value: trialReports),
+      RepositoryProvider.value(value: start),
+      RepositoryProvider.value(value: learning),
+      RepositoryProvider.value(value: homework),
+      RepositoryProvider.value(value: classroom),
+      RepositoryProvider.value(value: profile),
+      RepositoryProvider.value(value: zones),
+      RepositoryProvider.value(value: teaching),
+      RepositoryProvider.value(value: challenges),
+      RepositoryProvider.value(value: games),
+      RepositoryProvider.value(value: journey),
+      RepositoryProvider.value(value: hifz),
+      RepositoryProvider.value(value: mushaf),
+      RepositoryProvider.value(value: quran),
+      RepositoryProvider.value(value: notifications),
+      RepositoryProvider.value(value: home),
+      RepositoryProvider.value(value: live),
+    ],
+    child: child,
+  );
+}

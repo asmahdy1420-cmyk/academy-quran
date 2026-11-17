@@ -1,0 +1,161 @@
+<?php
+
+namespace Database\Seeders;
+
+use Illuminate\Database\Seeder;
+use Modules\Announcements\Database\Seeders\DemoAnnouncementsSeeder;
+use Modules\Billing\Database\Seeders\DemoAutoRenewSeeder;
+use Modules\Billing\Database\Seeders\DemoBillingSeeder;
+use Modules\Billing\Database\Seeders\DemoCollectionSeeder;
+use Modules\Billing\Database\Seeders\DemoDiscountsSeeder;
+use Modules\Billing\Database\Seeders\DemoPaymentsSeeder;
+use Modules\Catalog\Database\Seeders\DemoCatalogSeeder;
+use Modules\Classroom\Database\Seeders\DemoClassroomSeeder;
+use Modules\Classroom\Database\Seeders\DemoRecordingsSeeder;
+use Modules\Communication\Database\Seeders\DemoCommunicationSeeder;
+use Modules\Crm\Database\Seeders\DemoCrmSeeder;
+use Modules\Crm\Database\Seeders\DemoSelfStartSeeder;
+use Modules\Crm\Database\Seeders\DemoTrialReportSeeder;
+use Modules\Curriculum\Database\Seeders\DemoCurriculumSeeder;
+use Modules\Curriculum\Database\Seeders\DemoMaterialsSeeder;
+use Modules\Curriculum\Database\Seeders\DemoPracticeSeeder;
+use Modules\Evaluation\Database\Seeders\DemoEvaluationSeeder;
+use Modules\Games\Database\Seeders\DemoGamesSeeder;
+use Modules\Identity\Contracts\DTOs\NewUser;
+use Modules\Identity\Contracts\IdentityApi;
+use Modules\Identity\Database\Seeders\DemoSupportSeeder;
+use Modules\Identity\Enums\Role;
+use Modules\Import\Database\Seeders\DemoImportSeeder;
+use Modules\Learning\Database\Seeders\DemoChallengesSeeder;
+use Modules\Learning\Database\Seeders\DemoLearningSeeder;
+use Modules\Messaging\Database\Seeders\DemoMessagingSeeder;
+use Modules\Payroll\Database\Seeders\DemoPayrollSeeder;
+use Modules\People\Database\Seeders\DemoConsentsSeeder;
+use Modules\People\Database\Seeders\DemoPeopleSeeder;
+use Modules\People\Database\Seeders\DemoTeacherCardsSeeder;
+use Modules\People\Database\Seeders\DemoTeacherChecksSeeder;
+use Modules\Platform\Contracts\DTOs\NewAcademy;
+use Modules\Platform\Contracts\PlatformApi;
+use Modules\Platform\Contracts\TenantDirectory;
+use Modules\Platform\Database\Seeders\DemoBrandingSeeder;
+use Modules\Platform\Database\Seeders\DemoModulesSeeder;
+use Modules\Platform\Database\Seeders\DemoPlansSeeder;
+use Modules\Platform\Database\Seeders\DemoPlatformSeeder;
+use Modules\Platform\Database\Seeders\DemoRechargeSeeder;
+use Modules\Platform\Database\Seeders\DemoUsageSeeder;
+use Modules\Platform\Models\PlatformAdmin;
+use Modules\Privacy\Database\Seeders\DemoPrivacySeeder;
+use Modules\Quran\Database\Seeders\DemoMistakesSeeder;
+use Modules\Quran\Database\Seeders\DemoQuranPlansSeeder;
+use Modules\Quran\Database\Seeders\DemoQuranSeeder;
+use Modules\Safeguarding\Database\Seeders\DemoSafeguardingSeeder;
+use Modules\Scheduling\Database\Seeders\DemoDisputesSeeder;
+use Modules\Scheduling\Database\Seeders\DemoDstSeeder;
+use Modules\Scheduling\Database\Seeders\DemoEnrollmentsSeeder;
+use Modules\Scheduling\Database\Seeders\DemoFamilyBillingSeeder;
+use Modules\Scheduling\Database\Seeders\DemoLiveBoardSeeder;
+use Modules\Scheduling\Database\Seeders\DemoOpenHoursSeeder;
+use Modules\Scheduling\Database\Seeders\DemoPolicySeeder;
+use Modules\Scheduling\Database\Seeders\DemoShiftProposalsSeeder;
+use Modules\Scheduling\Database\Seeders\DemoShiftsSeeder;
+use Modules\Scheduling\Database\Seeders\DemoTimeOffSeeder;
+use Modules\SharedKernel\Audit\AuditActor;
+use Modules\SharedKernel\Tenancy\TenantContext;
+use Modules\Site\Database\Seeders\DemoSiteSeeder;
+use Modules\Support\Database\Seeders\DemoTicketsSeeder;
+
+/**
+ * Local demo data: academy "demo" (demo.<platform domain>, or header X-Academy: demo)
+ * with one user per main role, its logo and its reviewed policy (so "Start here" has nothing essential left), an evening of sessions around now for the
+ * live board, guardians' consent to their children's accounts (one still waiting), teacher shifts and proposals, plans and prices, and enrolled
+ * students with invoices in every state (payable online on the demo gateway), group lessons (a running group of adults, a children's
+ * group and one still forming, on group plans), and five months of
+ * paid renewals behind them (the revenue screen),
+ * curricula, lesson reports with homework, the Quran program once the server has its text (plans, recorded lessons, an exam passed with its certificate and one to book), its public page (on, with three teachers' cards), teacher time off with a substitute
+ * and an academy holiday, ratings, teachers' pay with last month closed, imports from sheets, and the notifications all of that sent;
+ * a second academy (suspended) and the platform team's console with past support sign-ins, the academies on their SaaS plans (the demo on Pro, nine of its ten teachers' places taken). Every password is "password" (DEMO_PASSWORD on a server). `composer demo` rebuilds it.
+ */
+class DatabaseSeeder extends Seeder
+{
+    public function run(PlatformApi $platform, TenantDirectory $directory, IdentityApi $identity, TenantContext $tenants): void
+    {
+        if ($directory->bySlug('demo') !== null) {
+            // Only what later versions of the demo add to one already there (DemoCatchUpSeeder, also on every deploy).
+            $this->call(DemoCatchUpSeeder::class);
+            $this->command?->info('Academy "demo" already exists; nothing else to seed.');
+
+            return;
+        }
+
+        $password = (string) config('app.demo.password');
+
+        $academy = $platform->createAcademy(new NewAcademy(
+            slug: 'demo',
+            nameAr: 'أكاديمية النور التجريبية',
+            nameEn: 'Noor Demo Academy',
+            baseCurrency: 'SAR',
+            defaultTimezone: 'Asia/Riyadh',
+            defaultLocale: 'ar',
+            country: 'SA',
+            plan: 'pro',
+        ));
+
+        $tenants->run($academy, function () use ($identity, $password): void {
+            $ownerId = null;
+            $people = [
+                ['هالة منصور', 'owner@demo.test', [Role::Owner, Role::Admin]],
+                ['منسّق الجداول', 'scheduler@demo.test', [Role::Scheduler]],
+                ['محاسب الأكاديمية', 'accountant@demo.test', [Role::Accountant]],
+                ['ريم عادل', 'sales@demo.test', [Role::Sales]],
+                ['أ. أحمد', 'teacher@demo.test', [Role::Teacher]],
+                ['ولي أمر', 'guardian@demo.test', [Role::Guardian]],
+                ['طالب', 'student@demo.test', [Role::Student]],
+            ];
+
+            foreach ($people as [$name, $email, $roles]) {
+                $id = $identity->createUser(new NewUser(name: $name, roles: $roles, email: $email, password: $password, locale: 'ar', timezone: 'Africa/Cairo'));
+                $ownerId ??= $id;
+            }
+            // What the demo does in the back office (prices, policy, voided invoices, ...) is in the activity log as the owner's.
+            AuditActor::use(new AuditActor('user', $ownerId, 'هالة منصور'));
+
+            $this->call([DemoBrandingSeeder::class, DemoModulesSeeder::class, DemoPolicySeeder::class, DemoCommunicationSeeder::class, DemoLiveBoardSeeder::class, DemoConsentsSeeder::class, DemoBillingSeeder::class, DemoShiftsSeeder::class, DemoRevenueSeeder::class, DemoEnrollmentsSeeder::class, DemoOpenHoursSeeder::class, DemoShiftProposalsSeeder::class, DemoCurriculumSeeder::class, DemoQuranSeeder::class, DemoMaterialsSeeder::class, DemoPracticeSeeder::class, DemoLearningSeeder::class, DemoMistakesSeeder::class, DemoChallengesSeeder::class, DemoGamesSeeder::class, DemoClassroomSeeder::class, DemoPaymentsSeeder::class, DemoTimeOffSeeder::class, DemoDstSeeder::class, DemoCrmSeeder::class, DemoTrialReportSeeder::class, DemoSelfStartSeeder::class, DemoEvaluationSeeder::class, DemoTicketsSeeder::class, DemoRecordingsSeeder::class, DemoDiscountsSeeder::class, DemoFamilyBillingSeeder::class, DemoCollectionSeeder::class, DemoAutoRenewSeeder::class, DemoGroupsSeeder::class, DemoPayrollSeeder::class, DemoImportSeeder::class, DemoCatalogSeeder::class, DemoPeopleSeeder::class, DemoDisputesSeeder::class, DemoPrivacySeeder::class, DemoTeacherChecksSeeder::class, DemoSafeguardingSeeder::class, DemoMessagingSeeder::class, DemoAnnouncementsSeeder::class, DemoTeacherCardsSeeder::class, DemoSiteSeeder::class]);
+            // Last: the Quran's plans, recorded lessons and exams book people at moments the seeders above may use.
+            $this->call(DemoQuranPlansSeeder::class);
+            AuditActor::forget();
+        });
+
+        // A second, smaller academy for the platform console; the platform team has suspended it.
+        $rawda = $platform->createAcademy(new NewAcademy(
+            slug: 'rawda',
+            nameAr: 'أكاديمية الروضة',
+            nameEn: 'Rawda Academy',
+            baseCurrency: 'EGP',
+            defaultTimezone: 'Africa/Cairo',
+            defaultLocale: 'ar',
+            country: 'EG',
+        ));
+        $tenants->run($rawda, function () use ($identity, $password): void {
+            $identity->createUser(new NewUser(name: 'محمود سامي', roles: [Role::Owner, Role::Admin], email: 'owner@rawda.test', password: $password, locale: 'ar', timezone: 'Africa/Cairo'));
+            foreach (['أ. منى', 'أ. حسن'] as $i => $name) {
+                $identity->createUser(new NewUser(name: $name, roles: [Role::Teacher], email: 'teacher'.($i + 1).'@rawda.test', password: $password));
+            }
+            foreach (['يوسف', 'ليلى', 'آدم', 'سلمى'] as $i => $name) {
+                $identity->createUser(new NewUser(name: $name, roles: [Role::Student], email: 'student'.($i + 1).'@rawda.test', password: $password));
+            }
+        });
+
+        // The platform team: admin@platform.test (the demo password) at /console, with past support sign-ins in the demo academy.
+        $this->call(DemoPlatformSeeder::class);
+        $admin = PlatformAdmin::query()->where('email', 'admin@platform.test')->firstOrFail();
+        $tenants->run($academy, fn () => $this->callWith(DemoSupportSeeder::class, ['adminId' => $admin->id, 'adminName' => $admin->name]));
+        $this->callWith(DemoPlansSeeder::class, ['adminId' => $admin->id, 'adminName' => $admin->name]);
+        // The demo's usage ledger: last month, this month's allowance, a pack bought, the days so far.
+        $this->call(DemoUsageSeeder::class);
+        // Its purchases of those packs, each with the platform's receipt.
+        $this->call(DemoRechargeSeeder::class);
+
+        $this->command?->info('Seeded academy "demo". Sign in as owner@demo.test with the demo password.');
+        $this->command?->info('Platform console: admin@platform.test at /console; the code: php artisan platform:code admin@platform.test');
+    }
+}

@@ -1,0 +1,102 @@
+<?php
+
+namespace App\Providers\Filament;
+
+use App\Http\Middleware\AuthenticateForPanel;
+use App\Http\Middleware\ResolveTenant;
+use App\Http\Middleware\SetPanelLocale;
+use Filament\Http\Middleware\AuthenticateSession;
+use Filament\Http\Middleware\DisableBladeIconComponents;
+use Filament\Http\Middleware\DispatchServingFilamentEvent;
+use Filament\Panel;
+use Filament\PanelProvider;
+use Filament\View\PanelsRenderHook;
+use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
+use Illuminate\Cookie\Middleware\EncryptCookies;
+use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
+use Illuminate\Routing\Middleware\SubstituteBindings;
+use Illuminate\Session\Middleware\StartSession;
+use Illuminate\View\Middleware\ShareErrorsFromSession;
+use Modules\Classroom\Filament\Teacher\ClassroomTeacherPlugin;
+use Modules\Crm\Filament\Teacher\CrmTeacherPlugin;
+use Modules\Evaluation\Filament\Teacher\EvaluationTeacherPlugin;
+use Modules\Identity\Filament\IdentityPlugin;
+use Modules\Identity\Filament\Pages\SignIn;
+use Modules\Identity\TwoFactor\TwoFactor;
+use Modules\Learning\Filament\Teacher\LearningTeacherPlugin;
+use Modules\Messaging\Filament\Teacher\MessagingTeacherPlugin;
+use Modules\Payroll\Filament\Teacher\PayrollTeacherPlugin;
+use Modules\People\Filament\Teacher\PeopleTeacherPlugin;
+use Modules\Platform\Filament\PlatformPlugin;
+use Modules\Privacy\Filament\Teacher\PrivacyTeacherPlugin;
+use Modules\Quran\Filament\Teacher\QuranTeacherPlugin;
+use Modules\Safeguarding\Filament\Teacher\SafeguardingTeacherPlugin;
+use Modules\Scheduling\Filament\Teacher\SchedulingTeacherPlugin;
+use Modules\SharedKernel\Realtime\EnableBrowserEcho;
+use Modules\Support\Filament\Teacher\SupportTeacherPlugin;
+
+/**
+ * The teacher area at {slug}.{platform domain}/teach: today's lessons and the
+ * week, their students and reports, homework to mark, and their hours, in
+ * the academy's look. The same Actions as the teacher API for the mobile
+ * app; tenancy works exactly as in the back office.
+ */
+final class TeacherPanelProvider extends PanelProvider
+{
+    public function panel(Panel $panel): Panel
+    {
+        return $panel
+            ->id('teach')
+            // Live screens: one socket per page (Reverb, EnableBrowserEcho below) for the bell and any live part, and the helper they share.
+            ->renderHook(PanelsRenderHook::SCRIPTS_AFTER, fn () => view('shared::live'))
+            // A homework's game, tried before it is sent, opens in a sandboxed frame through the shared player.
+            ->renderHook(PanelsRenderHook::SCRIPTS_AFTER, fn () => view('shared::games.player'))
+            // Motion: pages slide in, cards follow, bars fill, numbers count up; none for reduced motion.
+            ->renderHook(PanelsRenderHook::HEAD_END, fn () => view('shared::motion.styles'))
+            ->renderHook(PanelsRenderHook::SCRIPTS_AFTER, fn () => view('shared::motion.script'))
+            // The frame: a side menu with a greeting and a sliding pill, a see-through top bar, page changes as view transitions.
+            ->renderHook(PanelsRenderHook::HEAD_END, fn () => view('shared::chrome.styles'))
+            ->renderHook(PanelsRenderHook::SCRIPTS_AFTER, fn () => view('shared::chrome.script'))
+            ->renderHook(PanelsRenderHook::SIDEBAR_NAV_START, fn () => view('shared::chrome.greeting'))
+            // The zone chip in the start corner: the person's own zone and its time, ticking; opened, the academy's and the device's, and a way to change it.
+            ->renderHook(PanelsRenderHook::LAYOUT_END, fn () => view('shared::chrome.zone'))
+            ->path('teach')
+            ->login(SignIn::class)
+            // Two-step sign-in, for whoever turned it on (anyone may, in My settings).
+            ->multiFactorAuthentication(fn () => [TwoFactor::provider()])
+            ->spa()
+            ->maxContentWidth('full')
+            ->topNavigation()
+            ->middleware([
+                ResolveTenant::class,
+                EncryptCookies::class,
+                AddQueuedCookiesToResponse::class,
+                StartSession::class,
+                AuthenticateSession::class,
+                ShareErrorsFromSession::class,
+                VerifyCsrfToken::class,
+                SubstituteBindings::class,
+                DisableBladeIconComponents::class,
+                DispatchServingFilamentEvent::class,
+                SetPanelLocale::class,
+                EnableBrowserEcho::class,
+            ], isPersistent: true)
+            ->authMiddleware([AuthenticateForPanel::class], isPersistent: true)
+            ->plugins([
+                ClassroomTeacherPlugin::make(),
+                SchedulingTeacherPlugin::make(),
+                CrmTeacherPlugin::make(),
+                LearningTeacherPlugin::make(),
+                QuranTeacherPlugin::make(),
+                EvaluationTeacherPlugin::make(),
+                PayrollTeacherPlugin::make(),
+                SupportTeacherPlugin::make(),
+                PrivacyTeacherPlugin::make(),
+                SafeguardingTeacherPlugin::make(),
+                MessagingTeacherPlugin::make(),
+                PeopleTeacherPlugin::make(),
+                PlatformPlugin::make(),
+                IdentityPlugin::make(),
+            ]);
+    }
+}

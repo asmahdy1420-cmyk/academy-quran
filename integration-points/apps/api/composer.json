@@ -1,0 +1,164 @@
+{
+    "$schema": "https://getcomposer.org/schema.json",
+    "name": "academy-lms/api",
+    "type": "project",
+    "description": "Academy LMS API: multi-tenant SaaS for online tutoring academies.",
+    "keywords": [
+        "lms",
+        "laravel",
+        "saas"
+    ],
+    "license": "MIT",
+    "require": {
+        "php": "^8.3",
+        "anthropic-ai/sdk": "^0.57",
+        "brick/money": "^0.15.2",
+        "chillerlan/php-qrcode": "^5.0",
+        "dedoc/scramble": "^0.13",
+        "filament/filament": "^5.9",
+        "laravel/framework": "^13.17",
+        "laravel/reverb": "^1.12",
+        "laravel/sanctum": "^4.0",
+        "laravel/tinker": "^3.0",
+        "openspout/openspout": "^4.32"
+    },
+    "require-dev": {
+        "fakerphp/faker": "^1.23",
+        "laravel/pail": "^1.2.5",
+        "laravel/pao": "^1.0.6",
+        "laravel/pint": "^1.27",
+        "mockery/mockery": "^1.6",
+        "nunomaduro/collision": "^8.6",
+        "pestphp/pest": "^4.7",
+        "pestphp/pest-plugin-laravel": "^4.1",
+        "phpunit/phpunit": "^12.5.12"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "app/",
+            "Database\\Factories\\": "database/factories/",
+            "Database\\Seeders\\": "database/seeders/",
+            "Modules\\SharedKernel\\": "modules/SharedKernel/src/",
+            "Modules\\Platform\\": "modules/Platform/src/",
+            "Modules\\Identity\\": "modules/Identity/src/",
+            "Modules\\Identity\\Database\\Factories\\": "modules/Identity/database/factories/",
+            "Modules\\Platform\\Database\\Factories\\": "modules/Platform/database/factories/",
+            "Modules\\Platform\\Database\\Seeders\\": "modules/Platform/database/seeders/",
+            "Modules\\Identity\\Database\\Seeders\\": "modules/Identity/database/seeders/",
+            "Modules\\Catalog\\": "modules/Catalog/src/",
+            "Modules\\Catalog\\Database\\Seeders\\": "modules/Catalog/database/seeders/",
+            "Modules\\People\\": "modules/People/src/",
+            "Modules\\People\\Database\\Seeders\\": "modules/People/database/seeders/",
+            "Modules\\Communication\\": "modules/Communication/src/",
+            "Modules\\Classroom\\Database\\Seeders\\": "modules/Classroom/database/seeders/",
+            "Modules\\Communication\\Database\\Seeders\\": "modules/Communication/database/seeders/",
+            "Modules\\Curriculum\\": "modules/Curriculum/src/",
+            "Modules\\Curriculum\\Database\\Seeders\\": "modules/Curriculum/database/seeders/",
+            "Modules\\Credits\\": "modules/Credits/src/",
+            "Modules\\Enrollment\\": "modules/Enrollment/src/",
+            "Modules\\Billing\\": "modules/Billing/src/",
+            "Modules\\Billing\\Database\\Seeders\\": "modules/Billing/database/seeders/",
+            "Modules\\Scheduling\\": "modules/Scheduling/src/",
+            "Modules\\Learning\\": "modules/Learning/src/",
+            "Modules\\Classroom\\": "modules/Classroom/src/",
+            "Modules\\Crm\\": "modules/Crm/src/",
+            "Modules\\Evaluation\\": "modules/Evaluation/src/",
+            "Modules\\Evaluation\\Database\\Seeders\\": "modules/Evaluation/database/seeders/",
+            "Modules\\Payroll\\": "modules/Payroll/src/",
+            "Modules\\Payroll\\Database\\Seeders\\": "modules/Payroll/database/seeders/",
+            "Modules\\Import\\": "modules/Import/src/",
+            "Modules\\Import\\Database\\Seeders\\": "modules/Import/database/seeders/",
+            "Modules\\Crm\\Database\\Seeders\\": "modules/Crm/database/seeders/",
+            "Modules\\Support\\": "modules/Support/src/",
+            "Modules\\Support\\Database\\Seeders\\": "modules/Support/database/seeders/",
+            "Modules\\Privacy\\": "modules/Privacy/src/",
+            "Modules\\Privacy\\Database\\Seeders\\": "modules/Privacy/database/seeders/",
+            "Modules\\Safeguarding\\": "modules/Safeguarding/src/",
+            "Modules\\Messaging\\": "modules/Messaging/src/",
+            "Modules\\Messaging\\Database\\Seeders\\": "modules/Messaging/database/seeders/",
+            "Modules\\Games\\": "modules/Games/src/",
+            "Modules\\Games\\Database\\Seeders\\": "modules/Games/database/seeders/",
+            "Modules\\Announcements\\": "modules/Announcements/src/",
+            "Modules\\Quran\\": "modules/Quran/src/",
+            "Modules\\Quran\\Database\\Seeders\\": "modules/Quran/database/seeders/",
+            "Modules\\Announcements\\Database\\Seeders\\": "modules/Announcements/database/seeders/",
+            "Modules\\Site\\": "modules/Site/src/",
+            "Modules\\Site\\Database\\Seeders\\": "modules/Site/database/seeders/",
+            "Modules\\Safeguarding\\Database\\Seeders\\": "modules/Safeguarding/database/seeders/",
+            "Modules\\Learning\\Database\\Seeders\\": "modules/Learning/database/seeders/",
+            "Modules\\Scheduling\\Database\\Factories\\": "modules/Scheduling/database/factories/",
+            "Modules\\Scheduling\\Database\\Seeders\\": "modules/Scheduling/database/seeders/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "setup": [
+            "composer install",
+            "@php -r \"file_exists('.env') || copy('.env.example', '.env');\"",
+            "@php artisan key:generate",
+            "@php artisan migrate --database=pgsql_owner --force",
+            "npm install --ignore-scripts",
+            "npm run build"
+        ],
+        "dev": [
+            "Composer\\Config::disableProcessTimeout",
+            "@php artisan dev"
+        ],
+        "test": [
+            "@php artisan config:clear --ansi",
+            "@php vendor/bin/pest"
+        ],
+        "post-autoload-dump": [
+            "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
+            "@php artisan package:discover --ansi",
+            "@php artisan filament:upgrade"
+        ],
+        "post-update-cmd": [
+            "@php artisan vendor:publish --tag=laravel-assets --ansi --force"
+        ],
+        "post-root-package-install": [
+            "@php -r \"file_exists('.env') || copy('.env.example', '.env');\""
+        ],
+        "post-create-project-cmd": [
+            "@php artisan key:generate --ansi",
+            "@php -r \"file_exists('database/database.sqlite') || touch('database/database.sqlite');\"",
+            "@php artisan migrate --graceful --ansi"
+        ],
+        "pre-package-uninstall": [
+            "Illuminate\\Foundation\\ComposerScripts::prePackageUninstall"
+        ],
+        "migrate": [
+            "@php artisan migrate --database=pgsql_owner --force"
+        ],
+        "lint": [
+            "@php vendor/bin/pint --test"
+        ],
+        "demo": [
+            "@php artisan migrate:fresh --database=pgsql_owner --force",
+            "@php artisan db:seed --force"
+        ],
+        "openapi": [
+            "@php artisan scramble:export --path=../../packages/openapi/openapi.json"
+        ]
+    },
+    "extra": {
+        "laravel": {
+            "dont-discover": []
+        }
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "preferred-install": "dist",
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true,
+            "php-http/discovery": true
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

@@ -1,0 +1,101 @@
+<?php
+
+namespace App\Providers\Filament;
+
+use App\Filament\Family\FamilyHome;
+use App\Http\Middleware\AuthenticateForPanel;
+use App\Http\Middleware\ResolveTenant;
+use App\Http\Middleware\SetPanelLocale;
+use Filament\Http\Middleware\AuthenticateSession;
+use Filament\Http\Middleware\DisableBladeIconComponents;
+use Filament\Http\Middleware\DispatchServingFilamentEvent;
+use Filament\Panel;
+use Filament\PanelProvider;
+use Filament\View\PanelsRenderHook;
+use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
+use Illuminate\Cookie\Middleware\EncryptCookies;
+use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
+use Illuminate\Routing\Middleware\SubstituteBindings;
+use Illuminate\Session\Middleware\StartSession;
+use Illuminate\View\Middleware\ShareErrorsFromSession;
+use Modules\Billing\Filament\Family\BillingFamilyPlugin;
+use Modules\Classroom\Filament\Family\ClassroomFamilyPlugin;
+use Modules\Games\Filament\Family\GamesFamilyPlugin;
+use Modules\Identity\Filament\IdentityPlugin;
+use Modules\Identity\Filament\Pages\SignIn;
+use Modules\Identity\TwoFactor\TwoFactor;
+use Modules\Learning\Filament\Family\LearningFamilyPlugin;
+use Modules\Messaging\Filament\Family\MessagingFamilyPlugin;
+use Modules\People\Filament\Family\PeopleFamilyPlugin;
+use Modules\Platform\Filament\PlatformPlugin;
+use Modules\Privacy\Filament\Family\PrivacyFamilyPlugin;
+use Modules\Quran\Filament\Family\QuranFamilyPlugin;
+use Modules\Safeguarding\Filament\Family\SafeguardingFamilyPlugin;
+use Modules\Scheduling\Filament\Family\SchedulingFamilyPlugin;
+use Modules\SharedKernel\Realtime\EnableBrowserEcho;
+use Modules\Support\Filament\Family\SupportFamilyPlugin;
+
+/**
+ * The family area at {slug}.{platform domain}/my: students and guardians on
+ * the web, in the academy's look. A guardian follows each child (the
+ * switcher at the top of every page); the screens come from the modules.
+ */
+final class FamilyPanelProvider extends PanelProvider
+{
+    public function panel(Panel $panel): Panel
+    {
+        return $panel
+            ->id('family')
+            ->path('my')
+            ->login(SignIn::class)
+            // Two-step sign-in, for whoever turned it on (anyone may, in My settings).
+            ->multiFactorAuthentication(fn () => [TwoFactor::provider()])
+            ->spa()
+            ->topNavigation()
+            ->maxContentWidth('6xl')
+            ->pages([FamilyHome::class])
+            // Live screens: one socket per page (Reverb, EnableBrowserEcho below), and the helper they share.
+            ->renderHook(PanelsRenderHook::SCRIPTS_AFTER, fn () => view('shared::live'))
+            // Games open in sandboxed frames through the shared player.
+            ->renderHook(PanelsRenderHook::SCRIPTS_AFTER, fn () => view('shared::games.player'))
+            // Motion: pages slide in, cards follow, bars fill, numbers count up; none for reduced motion.
+            ->renderHook(PanelsRenderHook::HEAD_END, fn () => view('shared::motion.styles'))
+            ->renderHook(PanelsRenderHook::SCRIPTS_AFTER, fn () => view('shared::motion.script'))
+            // The frame: a side menu with a greeting and a sliding pill, a see-through top bar, page changes as view transitions.
+            ->renderHook(PanelsRenderHook::HEAD_END, fn () => view('shared::chrome.styles'))
+            ->renderHook(PanelsRenderHook::SCRIPTS_AFTER, fn () => view('shared::chrome.script'))
+            ->renderHook(PanelsRenderHook::SIDEBAR_NAV_START, fn () => view('shared::chrome.greeting'))
+            // The zone chip in the start corner: the person's own zone and its time, ticking; opened, the academy's and the device's, and a way to change it.
+            ->renderHook(PanelsRenderHook::LAYOUT_END, fn () => view('shared::chrome.zone'))
+            ->middleware([
+                ResolveTenant::class,
+                EncryptCookies::class,
+                AddQueuedCookiesToResponse::class,
+                StartSession::class,
+                AuthenticateSession::class,
+                ShareErrorsFromSession::class,
+                VerifyCsrfToken::class,
+                SubstituteBindings::class,
+                DisableBladeIconComponents::class,
+                DispatchServingFilamentEvent::class,
+                SetPanelLocale::class,
+                EnableBrowserEcho::class,
+            ], isPersistent: true)
+            ->authMiddleware([AuthenticateForPanel::class], isPersistent: true)
+            ->plugins([
+                PeopleFamilyPlugin::make(),
+                SchedulingFamilyPlugin::make(),
+                LearningFamilyPlugin::make(),
+                QuranFamilyPlugin::make(),
+                BillingFamilyPlugin::make(),
+                ClassroomFamilyPlugin::make(),
+                SupportFamilyPlugin::make(),
+                PrivacyFamilyPlugin::make(),
+                SafeguardingFamilyPlugin::make(),
+                MessagingFamilyPlugin::make(),
+                GamesFamilyPlugin::make(),
+                PlatformPlugin::make(),
+                IdentityPlugin::make(),
+            ]);
+    }
+}

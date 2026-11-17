@@ -1,0 +1,61 @@
+<?php
+
+// Plan limits and areas (SharedKernel\Plans), in every module's words.
+return [
+    'features' => [
+        'crm' => 'Leads and trial lessons',
+        'online_payments' => 'Online payments',
+        'import' => 'Data import',
+        'custom_branding' => 'Your own colour templates',
+        'payroll' => "Teachers' pay",
+        'ai' => 'AI helpers',
+        'quran' => 'The Quran',
+        'groups' => 'Group lessons',
+        'curriculum' => 'Curricula and the learning journey',
+        'games' => 'Games',
+        'messaging' => 'Conversations',
+        'announcements' => 'Announcements',
+        'support' => 'Help and complaints',
+        'evaluation' => "Teachers' performance and lesson ratings",
+        'site' => "The academy's page",
+    ],
+    // One line on each area, for the academy's modules page and the console.
+    'descriptions' => [
+        'crm' => 'Follow leads from the first contact to the trial lesson and the course.',
+        'online_payments' => "Families pay by card through the academy's gateway, with saved cards and automatic renewal.",
+        'import' => 'Bring teachers, families and schedules in from spreadsheets at once.',
+        'custom_branding' => "The academy's own colour and font templates.",
+        'payroll' => "Teachers' pay from the lessons they taught, with a statement each month.",
+        'ai' => 'Helpers that suggest practice, report drafts and curricula; a person always checks what they write.',
+        'quran' => 'Memorisation and review programmes, the shared mushaf in lessons, exams and certificates.',
+        'groups' => 'Lessons for several students with one teacher, with seats and fixed weekly times.',
+        'curriculum' => "Build curricula with their levels and lessons, and the student's journey across islands and stars.",
+        'games' => 'Short practice games on the curriculum\'s lessons, and creatures the student collects.',
+        'messaging' => "Conversations between a teacher, the student and the student's guardians, with contact details hidden.",
+        'announcements' => 'One message from the academy to all families or teachers at once.',
+        'support' => 'Help requests and complaints from families and teachers, and following up the answers.',
+        'evaluation' => "Teachers' performance indicators, and families' ratings of lessons.",
+        'site' => "A public page about the academy that takes trial and teaching requests, with the teachers' cards.",
+    ],
+    'limits' => [
+        'teachers' => 'Teachers',
+        'active_students' => 'Active students',
+        'video_minutes' => 'Video minutes a month',
+        'storage_mb' => 'File storage',
+        'ai_uses' => 'AI credits a month',
+    ],
+    // The platform's meters (usage_ledger): each with its monthly allowance and bought balance.
+    'meters' => [
+        'video_minutes' => 'Video minutes',
+        'ai_credits' => 'AI credits',
+    ],
+    'reached' => [
+        'teachers' => "The academy's plan allows :max teachers. Ask the platform team to raise it.",
+        'active_students' => "The academy's plan allows :max active students. Ask the platform team to raise it.",
+        'video_minutes' => "This month's video minutes are used up (:max minutes).",
+        'storage_mb' => 'The file storage is full (:max MB).',
+        'ai_uses' => 'The AI credits are used up (:max credits a month).',
+    ],
+    'not_in_plan' => ":feature is not in the academy's plan. Ask the platform team to add it.",
+    'hidden' => '“:feature” is switched off at this academy. The owner or an admin can bring it back in Settings › Academy modules.',
+];
